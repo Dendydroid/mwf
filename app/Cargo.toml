@@ -1,0 +1,27 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tower-http = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+config = { workspace = true }
+rmp-serde = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

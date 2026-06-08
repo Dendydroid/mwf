@@ -1,0 +1,9 @@
+[app_settings]
+
+[database_settings]
+max_connections = 20
+timeout_seconds = 3
+
+[cache_settings]
+session_ttl_days = 1
+
