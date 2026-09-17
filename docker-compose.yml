@@ -33,6 +33,53 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── vLLM (OpenAI-compatible inference server) ─────────────────────────────
+  vllm:
+    build:
+      context: ./docker/vllm
+      dockerfile: Dockerfile
+      args:
+        VLLM_IMAGE: ${LLM_IMAGE:-vllm/vllm-openai:latest}
+    image: ai-assistant-vllm:latest
+    restart: unless-stopped
+    # vLLM needs a large shared-memory segment for its worker processes
+    ipc: host
+    environment:
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_HOST: 0.0.0.0
+      LLM_PORT: ${LLM_PORT}
+      LLM_MAX_MODEL_LEN: ${LLM_MAX_MODEL_LEN}
+      LLM_GPU_MEMORY_UTILIZATION: ${LLM_GPU_MEMORY_UTILIZATION}
+      LLM_ENABLE_PREFIX_CACHING: ${LLM_ENABLE_PREFIX_CACHING}
+      LLM_SERVED_MODEL_NAME: ${LLM_SERVED_MODEL_NAME:-}
+      LLM_TENSOR_PARALLEL_SIZE: ${LLM_TENSOR_PARALLEL_SIZE:-}
+      LLM_DTYPE: ${LLM_DTYPE:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_EXTRA_ARGS: ${LLM_EXTRA_ARGS:-}
+      # Real vLLM setting: WSL2 keeps pinned memory off by default, but the
+      # v2 GPU model runner needs UVA, which needs pinned memory.
+      VLLM_WSL2_ENABLE_PIN_MEMORY: ${LLM_WSL2_PIN_MEMORY:-1}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "${LLM_PORT}:${LLM_PORT}"
+    volumes:
+      # Model weights cache — keeps downloads across container rebuilds
+      - ${LLM_CACHE_DIR:-./models}:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${LLM_GPU_COUNT:-all}
+              capabilities: [ gpu ]
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -fsS http://localhost:${LLM_PORT}/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # First boot downloads and loads the weights, which can take a while
+      start_period: 600s
+
   # ── Application ───────────────────────────────────────────────────────────
   app:
     build:
@@ -44,11 +91,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      vllm:
+        condition: service_healthy
     environment:
       APP_ENV: ${APP_ENV}
       APP_PORT: ${APP_PORT}
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379
+      LLM_URL: http://vllm:${LLM_PORT}/v1
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     ports:
       - "${APP_PORT}:${APP_PORT}"
 

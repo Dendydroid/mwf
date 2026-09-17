@@ -22,6 +22,7 @@ rmp-serde = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
+reqwest = { workspace = true, version = "1.0.0", features = ["json"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
