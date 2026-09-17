@@ -1,3 +1,7 @@
 /target
 .env
 .claude/tmp
+# Bind-mounted from the app container (docker-compose.yml): rolling log files,
+# not source. The directory itself is kept by .gitkeep.
+/logs/*
+!/logs/.gitkeep

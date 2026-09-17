@@ -19,6 +19,10 @@ RUN rm -rf app/src
 
 COPY app ./app
 COPY migrations ./migrations
+# The mimic client page is `include_str!`d into the binary (routes/api.rs), so
+# it has to exist at build time - without this the release build fails here
+# rather than at runtime.
+COPY client ./client
 RUN touch app/src/main.rs
 RUN cargo build --release --bin app
 
@@ -35,6 +39,10 @@ RUN apt-get update && apt-get install -y \
 # Copy the compiled binary
 COPY --from=builder /workspace/target/release/app /app/server
 COPY --from=builder /workspace/app/config /app/config
+# The default prompt, so the image runs on its own. docker-compose.yml mounts
+# the host copy over it, which is what makes editing a prompt a save rather than
+# a rebuild.
+COPY --from=builder /workspace/app/prompts /app/prompts
 COPY --from=builder /workspace/migrations /app/migrations
 # .env is copied from the build context, not the builder stage, so that
 # editing it does not invalidate the cached dependency build above.

@@ -1,3 +1,14 @@
+# Defaults for values that the environment may override (config::Environment is
+# layered on top of this file, so LLM_URL/LLM_MODEL win when they are exported).
+# They live here as well so `cargo test` and a bare `cargo run` have something
+# sane to point at instead of panicking on a missing variable.
+llm_url = "http://localhost:8000/v1"
+llm_model = "Qwen/Qwen2.5-7B-Instruct-AWQ"
+# Relative to the working directory, like this file itself: app/ when run with
+# cargo, /app/ in the container. The file is re-read every turn, so editing the
+# prompt needs no restart - see app/prompts/README.md.
+llm_system_prompt_file = "prompts/system_prompt.txt"
+
 [app_settings]
 
 [database_settings]
@@ -7,3 +18,15 @@ timeout_seconds = 3
 [cache_settings]
 session_ttl_days = 1
 
+[llm_settings]
+# A turn normally takes 1-3s against a warm vLLM. This is not sized for that, it
+# is sized for the bad day: a cold or contended GPU has been measured taking
+# 30s+ for a single turn, and 30 here turned that into a 502 for the caller.
+timeout_seconds = 120
+# Deterministic routing - see LlmSettings::temperature.
+temperature = 0.0
+# A well-formed answer for this schema is around 50 tokens. This leaves room for
+# a long sentence while stopping a repetition loop from generating to the end of
+# the 4096-token context window, which is the way a single turn ends up holding
+# the GPU for minutes.
+max_tokens = 256

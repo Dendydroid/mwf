@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai assistant mimic client</title>
+
+<!--
+  WHAT THIS IS
+  ------------
+  The backend classifies one spoken sentence at a time: POST the text to
+  /assistant/handle-request and it comes back with the matched function, a
+  confidence, the language it detected and a sentence to read out. That is the
+  whole contract, and this page is the thing that supplies the speaking half of
+  it - a stand-in for whatever telephony service would eventually be on the
+  other end of a real call.
+
+  It captures the microphone, transcribes in the browser, posts the transcript
+  in exactly the shape the endpoint expects, and reads the answer back, so the
+  exchange feels like a call rather than a form submission.
+
+  WHY THE BROWSER DOES THE SPEECH WORK
+  ------------------------------------
+  Two APIs do all of it, so this file has no dependencies at all - no npm, no
+  build step, no second process to run:
+
+    * SpeechRecognition  speech to text. Chrome streams the microphone to
+                         Google's speech service and hands back a transcript,
+                         so this part needs an internet connection even though
+                         the model answering is on this machine.
+    * speechSynthesis    text to speech, for the answer. Local, no network.
+
+  WHY IT IS SERVED BY THE APP INSTEAD OF OPENED FROM DISK
+  ------------------------------------------------------
+  Both the microphone and SpeechRecognition need a "secure context". https and
+  http://localhost qualify; file:// does not reliably - Chrome refuses to
+  remember a microphone permission for it and recognition tends to die with a
+  bare `network` error. Serving this page from the API itself at /mimic-client
+  puts it on http://localhost:<APP_PORT>, which is a secure context and is
+  same-origin with the endpoint, so CORS never enters into it either. The file
+  still lives outside the `app` crate, in client/, because it consumes the API
+  rather than belonging to it.
+
+  There is no credential to paste: the endpoint is open, the same as the rest of
+  this service's routes. If it ever grows a shared secret, that goes in a field
+  here rather than being injected by the server - injecting it would hand the
+  secret to anyone who can load the page.
+-->
+
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --line: #2b303a;
+    --text: #e7e9ee;
+    --muted: #99a1b3;
+    --accent: #4f9cf9;
+    --caller: #4f9cf9;
+    --system: #46c98b;
+    --warn: #e0b341;
+    --error: #f2645a;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 24px 16px 48px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  main { max-width: 720px; margin: 0 auto; }
+
+  h1 { font-size: 20px; margin: 0 0 4px; }
+
+  .subtitle { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+
+  input[type="text"] {
+    width: 100%;
+    padding: 9px 10px;
+    background: #12141a;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+  }
+
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  button {
+    font: inherit;
+    font-weight: 600;
+    padding: 12px 20px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--accent);
+    color: #06121f;
+    cursor: pointer;
+  }
+
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  button.hangup { background: var(--error); color: #1a0806; }
+
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+
+  .toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+
+  .toggle input { accent-color: var(--accent); }
+
+  .toggle select {
+    font: inherit;
+    padding: 4px 6px;
+    background: #12141a;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+
+  /* A coloured dot plus a word, so the current phase of the exchange
+     (listening / thinking / speaking) reads at a glance. */
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+
+  .status[data-state="listening"] .dot { background: var(--caller); animation: pulse 1.2s infinite; }
+  .status[data-state="thinking"]  .dot { background: var(--warn);   animation: pulse 1.2s infinite; }
+  .status[data-state="speaking"]  .dot { background: var(--system); animation: pulse 1.2s infinite; }
+  .status[data-state="error"]     .dot { background: var(--error); }
+
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  .interim {
+    min-height: 22px;
+    margin-top: 12px;
+    font-style: italic;
+    color: var(--muted);
+  }
+
+  #log { display: flex; flex-direction: column; gap: 10px; }
+
+  .turn { padding: 10px 12px; border-radius: 8px; border-left: 3px solid var(--line); background: #12141a; }
+  .turn .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 3px; }
+  .turn.caller { border-left-color: var(--caller); }
+  .turn.system { border-left-color: var(--system); }
+  .turn.error  { border-left-color: var(--error); color: var(--error); }
+
+  /* The classification behind an answer. It is the actual product of the
+     endpoint - the sentence is only how it is delivered - so it is shown on
+     every turn rather than hidden behind a debug toggle. */
+  .decision { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+  .tag {
+    font-size: 11px;
+    letter-spacing: .04em;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+
+  /* The matched function is the headline of a turn, so it leads and is the one
+     badge that carries its value without its key. */
+  .tag.fn { color: var(--system); border-color: var(--system); }
+  /* Cosmetic only, and keyed on names the prompt happens to use today: these
+     are the two outcomes worth spotting from across the room. Renaming a
+     function in the prompt costs nothing but the colour. */
+  .tag.fn[data-function="fallback_human"] { color: var(--warn); border-color: var(--warn); }
+  .tag.fn[data-function="prompt_injection_attempt"],
+  .tag.fn[data-function="attack"] { color: var(--error); border-color: var(--error); }
+
+  /* A true boolean is a fact about this turn; a false one is the absence of it.
+     Showing both, with the false ones dimmed, keeps the badge row in the same
+     shape from turn to turn instead of having chips appear and disappear. */
+  .tag.on { color: var(--accent); border-color: var(--accent); }
+  .tag.off { opacity: .45; }
+
+  .tag .key { opacity: .7; }
+
+  /* A meter behind the number, for the 0..1 values (confidence, anger_level).
+     A bare "0.72" needs reading; a bar that is three-quarters full does not. */
+  .tag.ratio {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+
+  .tag.ratio::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--fill, 0%);
+    background: currentColor;
+    opacity: .16;
+    z-index: -1;
+  }
+
+  .empty { color: var(--muted); font-size: 13px; }
+
+  code { background: #12141a; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+
+<body>
+<main>
+  <h1>ai assistant mimic client</h1>
+  <p class="subtitle">
+    Speak &rarr; Chrome transcribes &rarr; <code>POST /assistant/handle-request</code> &rarr;
+    the answer is read back. Every key the system prompt's schema asks for,
+    beyond the answer itself, is shown as a badge under it.
+  </p>
+
+  <section class="panel">
+    <label for="base-url">API base URL (blank = this same server)</label>
+    <input id="base-url" type="text" autocomplete="off" spellcheck="false"
+           placeholder="http://localhost:8080">
+    <p class="hint">
+      Only needed when the backend runs somewhere other than where this page came from.
+      Remembered in this browser.
+    </p>
+  </section>
+
+  <section class="panel">
+    <div class="controls">
+      <button id="call">Start call</button>
+      <label class="toggle">
+        Language
+        <select id="lang">
+          <option value="en-US">English</option>
+          <option value="de-DE">Deutsch</option>
+          <option value="ru-RU">Русский</option>
+        </select>
+      </label>
+      <label class="toggle">
+        <input id="speak-back" type="checkbox" checked>
+        Read answers aloud
+      </label>
+      <span class="status" id="status" data-state="idle">
+        <span class="dot"></span><span id="status-text">Idle</span>
+      </span>
+    </div>
+    <p class="interim" id="interim"></p>
+  </section>
+
+  <!-- Typing drives the identical request path, which is how to test when
+       there is no microphone, no internet for Chrome's transcription, or when
+       it simply misheard. -->
+  <section class="panel">
+    <label for="typed">Or type a sentence and press Enter (same endpoint, no microphone)</label>
+    <input id="typed" type="text" autocomplete="off" placeholder="I want to cancel my subscription">
+  </section>
+
+  <section class="panel">
+    <div id="log"><p class="empty">Nothing said yet.</p></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  // The contract, fixed by routes/api.rs. The path is asserted against this
+  // file by `mimic_client_page_posts_to_the_endpoint_this_router_serves`, so a
+  // rename on the server side fails the test suite rather than this page.
+  const ENDPOINT_PATH = "/assistant/handle-request";
+
+  const DEFAULT_LANG = "en-US";
+  const STORAGE_BASE_URL = "assistant.mimic.baseUrl";
+  const STORAGE_LANG = "assistant.mimic.lang";
+
+  // The model reports the language it detected as a bare "en" / "de" / "ru"
+  // (that is the prompt's schema). speechSynthesis wants a full BCP-47 tag, so
+  // the two are bridged here - and preferring what the model detected over what
+  // the selector says means a German sentence is read back in German even if
+  // the microphone was left on English.
+  const VOICE_FOR = { en: "en-US", de: "de-DE", ru: "ru-RU" };
+
+  const baseUrlInput = document.getElementById("base-url");
+  const callButton = document.getElementById("call");
+  const speakBackInput = document.getElementById("speak-back");
+  const statusEl = document.getElementById("status");
+  const statusTextEl = document.getElementById("status-text");
+  const interimEl = document.getElementById("interim");
+  const langSelect = document.getElementById("lang");
+  const typedInput = document.getElementById("typed");
+  const logEl = document.getElementById("log");
+
+  // -- Remembered settings -------------------------------------------------
+
+  // Private-browsing modes throw on localStorage. Losing a remembered setting
+  // is a nuisance; it is never a reason for the page to stop working.
+  const readStored = (key) => {
+    try { return window.localStorage.getItem(key); } catch { return null; }
+  };
+  const writeStored = (key, value) => {
+    try { window.localStorage.setItem(key, value); } catch { /* see above */ }
+  };
+
+  baseUrlInput.value = readStored(STORAGE_BASE_URL) || "";
+  baseUrlInput.addEventListener("change", () => {
+    writeStored(STORAGE_BASE_URL, baseUrlInput.value.trim());
+  });
+
+  langSelect.value = readStored(STORAGE_LANG) || DEFAULT_LANG;
+  if (!langSelect.value) { langSelect.value = DEFAULT_LANG; }
+  langSelect.addEventListener("change", () => {
+    writeStored(STORAGE_LANG, langSelect.value);
+    // Recognition latches its language at start(), so a mid-call switch only
+    // takes effect once the current session is restarted.
+    if (inCall) { stopRecognition(); listenAgain(); }
+  });
+
+  // -- Log ------------------------------------------------------------------
+
+  const setStatus = (state, text) => {
+    statusEl.dataset.state = state;
+    statusTextEl.textContent = text;
+  };
+
+  // The one key the page treats specially, because it is the sentence being
+  // read out rather than a fact about the turn. Everything else in the response
+  // is a badge, whatever it is called - which is what lets a key added to the
+  // system prompt show up here with no change to this file.
+  const ANSWER_KEY = "answer";
+
+  // Also not a badge: the function name leads the row and is rendered as its
+  // value alone, so it is pulled out of the generic loop rather than excluded
+  // from the response.
+  const FUNCTION_KEY = "selected_function";
+
+  /**
+   * Builds one badge for a key/value pair of the decision.
+   *
+   * The shape is chosen from the value's type rather than from a list of known
+   * keys, so a new key in the prompt renders sensibly the first time it appears:
+   *
+   *   boolean   is_greeting          - lit when true, dimmed when false
+   *   0..1      confidence 95%       - as a percentage, with a meter behind it
+   *   number    retry_count 3        - as itself
+   *   string    language_detected en
+   *
+   * Anything else (an object or an array, if the schema ever asks for one) is
+   * shown as compact JSON, which is at least honest about what came back.
+   *
+   * The 0..1 rule is inclusive, so a whole number 1 reads as "100%". That is
+   * right for `confidence: 1.0`, which the model returns often, and wrong for a
+   * hypothetical `retry_count: 1` - JSON gives no way to tell them apart, and
+   * this schema asks for scores far more than it asks for counts.
+   */
+  function badgeFor(key, value) {
+    const badge = document.createElement("span");
+    badge.className = "tag";
+
+    const label = document.createElement("span");
+    label.className = "key";
+    label.textContent = `${key} `;
+
+    if (typeof value === "boolean") {
+      badge.classList.add(value ? "on" : "off");
+      badge.textContent = key;
+      return badge;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const isRatio = value >= 0 && value <= 1;
+      if (isRatio) {
+        badge.classList.add("ratio");
+        badge.style.setProperty("--fill", `${Math.round(value * 100)}%`);
+      }
+      badge.append(label, document.createTextNode(
+        isRatio ? `${Math.round(value * 100)}%` : String(Math.round(value * 100) / 100)
+      ));
+      return badge;
+    }
+
+    const text = (value === null || value === undefined)
+      ? "—"
+      : (typeof value === "string" ? value : JSON.stringify(value));
+
+    badge.append(label, document.createTextNode(text));
+    return badge;
+  }
+
+  /**
+   * Appends one line to the transcript.
+   *
+   * `decision`, when given, is the endpoint's whole reply: its keys other than
+   * `answer` each become a badge, in the order the response lists them - which
+   * is the order the system prompt's schema lists them in, preserved all the way
+   * through the backend.
+   */
+  function addTurn(kind, who, text, decision) {
+    logEl.querySelector(".empty")?.remove();
+
+    const turn = document.createElement("div");
+    turn.className = `turn ${kind}`;
+
+    const label = document.createElement("div");
+    label.className = "who";
+    label.textContent = who;
+
+    const body = document.createElement("div");
+    // textContent, never innerHTML: this text comes from a speech service and
+    // from a language model, so it must never be able to inject markup.
+    body.textContent = text;
+
+    turn.append(label, body);
+
+    if (decision) {
+      const tags = document.createElement("div");
+      tags.className = "decision";
+
+      if (typeof decision[FUNCTION_KEY] === "string") {
+        const fn = document.createElement("span");
+        fn.className = "tag fn";
+        fn.dataset.function = decision[FUNCTION_KEY];
+        fn.textContent = decision[FUNCTION_KEY];
+        tags.append(fn);
+      }
+
+      for (const [key, value] of Object.entries(decision)) {
+        if (key === ANSWER_KEY || key === FUNCTION_KEY) { continue; }
+        tags.append(badgeFor(key, value));
+      }
+
+      if (tags.childElementCount) { turn.append(tags); }
+    }
+
+    logEl.append(turn);
+    turn.scrollIntoView({ block: "nearest" });
+  }
+
+  // -- The request ----------------------------------------------------------
+
+  async function ask(requestText) {
+    const base = baseUrlInput.value.trim().replace(/\/+$/, "");
+
+    const response = await fetch(base + ENDPOINT_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // The backend does not use `language` to decide anything - the model
+      // detects that itself - but it knows which language the microphone was
+      // listening for, which nothing on the server side otherwise can, and it
+      // logs it. Sending it costs nothing and makes a mis-set selector visible
+      // when a transcript and `language_detected` disagree.
+      body: JSON.stringify({
+        request_text: requestText,
+        language: langSelect.value || DEFAULT_LANG,
+      }),
+      // A cookie session is attached by the server's middleware; sending it
+      // back keeps one browser on one session instead of minting a new one per
+      // request. Same-origin is the default, this only matters when the base
+      // URL points elsewhere.
+      credentials: "include",
+    });
+
+    const raw = await response.text();
+    let payload = null;
+    try { payload = JSON.parse(raw); } catch { /* handled below */ }
+
+    if (!response.ok) {
+      // Every failure carries the same {"error": "..."} envelope (see
+      // error.rs), so one branch covers all of them.
+      throw new Error(`HTTP ${response.status} - ${payload?.error || raw || response.statusText}`);
+    }
+
+    // `answer` is the only key this page requires; every other one is rendered
+    // generically, so the check stops here rather than validating a shape the
+    // system prompt is meant to keep changing.
+    if (typeof payload?.[ANSWER_KEY] !== "string") {
+      throw new Error(`response did not carry a string \`${ANSWER_KEY}\`: ${raw}`);
+    }
+
+    return payload;
+  }
+
+  // Is a request already on its way to the backend?
+  //
+  // Continuous recognition emits a final result per pause, so a caller who
+  // keeps talking while the model is still thinking would stack several
+  // requests on one GPU that serves them one at a time. Each then waits behind
+  // the others and the last ones hit the server's inference timeout - which is
+  // exactly how a turn that was merely slow came back as an error. One turn at
+  // a time, and what was said meanwhile is kept for the moment the answer lands.
+  let inFlight = false;
+  let queuedUtterance = null;
+
+  /** One full exchange: show what was heard, ask, show and speak the answer. */
+  async function handleUtterance(text) {
+    text = (text || "").trim();
+    if (!text) { return; }
+
+    if (inFlight) {
+      // Only the most recent one is worth keeping: on a phone call the sentence
+      // someone just finished is the one they are waiting on an answer for.
+      queuedUtterance = text;
+      interimEl.textContent = `(waiting for the current answer) ${text}`;
+      return;
+    }
+
+    inFlight = true;
+    try {
+      await exchange(text);
+    } finally {
+      inFlight = false;
+
+      const queued = queuedUtterance;
+      queuedUtterance = null;
+      if (queued) { handleUtterance(queued); }
+    }
+  }
+
+  async function exchange(text) {
+    addTurn("caller", "You said", text);
+    setStatus("thinking", "Asking the model…");
+
+    let reply;
+    try {
+      reply = await ask(text);
+    } catch (error) {
+      addTurn("error", "Request failed", error.message);
+      setStatus("error", "Request failed");
+      if (inCall) { listenAgain(); }
+      return;
+    }
+
+    addTurn("system", "Assistant answered", reply[ANSWER_KEY], reply);
+
+    if (speakBackInput.checked) {
+      // A soft read of `language_detected`: the schema is free to rename or drop
+      // it, and the selector is a perfectly good fallback when it does.
+      speak(reply[ANSWER_KEY], VOICE_FOR[reply.language_detected] || langSelect.value);
+    } else {
+      resumeAfterAnswer();
+    }
+  }
+
+  function resumeAfterAnswer() {
+    if (inCall) { listenAgain(); } else { setStatus("idle", "Idle"); }
+  }
+
+  // -- Text to speech -------------------------------------------------------
+
+  /**
+   * Reads the answer back, then hands the microphone back to the recogniser.
+   *
+   * Recognition is suspended while this plays, because the microphone would
+   * otherwise hear the machine's own voice and transcribe the answer as if the
+   * caller had said it - which turns into an endless self-conversation.
+   */
+  function speak(text, lang) {
+    if (!("speechSynthesis" in window)) {
+      resumeAfterAnswer();
+      return;
+    }
+
+    stopRecognition();
+    setStatus("speaking", "Speaking…");
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = lang;
+    utterance.onend = utterance.onerror = resumeAfterAnswer;
+
+    window.speechSynthesis.cancel();   // drop anything still queued
+    window.speechSynthesis.speak(utterance);
+  }
+
+  // -- Speech to text -------------------------------------------------------
+
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  let recognition = null;   // the live recogniser, or null when stopped
+  let inCall = false;       // should the microphone keep coming back on
+  let suspended = false;    // stopped by us mid-call (while speaking), not by the user
+
+  if (!SpeechRecognitionCtor) {
+    callButton.disabled = true;
+    setStatus("error", "No speech recognition in this browser");
+    addTurn(
+      "error",
+      "Unsupported browser",
+      "This page needs the Web Speech API, which today means Chrome or Edge. " +
+      "The typed input above still exercises exactly the same endpoint."
+    );
+  }
+
+  function stopRecognition() {
+    if (!recognition) { return; }
+    suspended = true;
+    const stopping = recognition;
+    recognition = null;
+    stopping.onend = null;      // detached first, so it cannot auto-restart
+    stopping.onerror = null;
+    stopping.abort();
+  }
+
+  function listenAgain() {
+    suspended = false;
+    startRecognition();
+  }
+
+  function startRecognition() {
+    if (!SpeechRecognitionCtor || recognition) { return; }
+
+    const current = new SpeechRecognitionCtor();
+    current.lang = langSelect.value;
+    // Keep the microphone open across pauses instead of stopping at the first
+    // silence, so a call is a conversation rather than a single question.
+    current.continuous = true;
+    // Interim guesses are shown live, which makes it obvious the microphone is
+    // working; only final results are sent.
+    current.interimResults = true;
+    current.maxAlternatives = 1;
+
+    current.onresult = (event) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          handleUtterance(result[0].transcript);
+        } else {
+          interim += result[0].transcript;
+        }
+      }
+      interimEl.textContent = interim;
+    };
+
+    current.onerror = (event) => {
+      // `no-speech` and `aborted` are routine: the caller went quiet, or we
+      // stopped the recogniser ourselves.
+      if (event.error === "no-speech" || event.error === "aborted") { return; }
+
+      let message;
+      switch (event.error) {
+        case "not-allowed":
+        case "service-not-allowed":
+          message = "Microphone permission was denied. Allow it for this site using the " +
+                    "icon in the address bar, then start the call again.";
+          break;
+        case "audio-capture":
+          message = "No microphone was found. Check the input device and try again.";
+          break;
+        case "network":
+          message = "Chrome's speech service could not be reached. Its transcription is " +
+                    "cloud-backed, so this page needs an internet connection even though " +
+                    "the model answering is local.";
+          break;
+        default:
+          message = `Speech recognition error: ${event.error}`;
+      }
+
+      endCall();
+      addTurn("error", "Microphone", message);
+      setStatus("error", "Microphone error");
+    };
+
+    current.onend = () => {
+      // Chrome ends a recognition session on its own after a stretch of silence
+      // even with `continuous = true`, so a call has to restart it.
+      if (recognition === current) { recognition = null; }
+      if (inCall && !suspended) { startRecognition(); }
+    };
+
+    recognition = current;
+    try {
+      current.start();
+      setStatus("listening", "Listening…");
+    } catch {
+      // start() throws when a session is somehow already running; letting the
+      // existing one continue is the right recovery.
+      recognition = null;
+    }
+  }
+
+  function startCall() {
+    inCall = true;
+    callButton.textContent = "End call";
+    callButton.classList.add("hangup");
+    interimEl.textContent = "";
+    startRecognition();
+  }
+
+  function endCall() {
+    inCall = false;
+    callButton.textContent = "Start call";
+    callButton.classList.remove("hangup");
+    interimEl.textContent = "";
+    stopRecognition();
+    suspended = false;
+    if ("speechSynthesis" in window) { window.speechSynthesis.cancel(); }
+    setStatus("idle", "Idle");
+  }
+
+  callButton.addEventListener("click", () => {
+    if (inCall) { endCall(); } else { startCall(); }
+  });
+
+  typedInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") { return; }
+    const text = typedInput.value;
+    typedInput.value = "";
+    handleUtterance(text);
+  });
+})();
+</script>
+</body>
+</html>

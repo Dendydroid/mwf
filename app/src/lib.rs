@@ -3,6 +3,7 @@ mod db;
 mod factory;
 mod session;
 mod settings;
+mod vllm;
 
 #[cfg(test)]
 mod tests {

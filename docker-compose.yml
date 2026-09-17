@@ -101,8 +101,21 @@ services:
       LLM_URL: http://vllm:${LLM_PORT}/v1
       LLM_MODEL: ${LLM_MODEL}
       LLM_API_KEY: ${LLM_API_KEY:-}
+      # Where the app writes its rolling log files *inside* the container. The
+      # volume below maps that to ./logs on the host, so the logs survive the
+      # container being rebuilt or removed - which `docker logs` alone does not.
+      LOG_DIR: ${LOG_DIR:-/var/log/app}
+      LLM_SYSTEM_PROMPT_FILE: ${LLM_SYSTEM_PROMPT_FILE:-prompts/system_prompt.txt}
     ports:
       - "${APP_PORT}:${APP_PORT}"
+    volumes:
+      # A bind mount rather than a named volume: the point is being able to open
+      # the files from the project folder without going through Docker.
+      - ${LOG_HOST_DIR:-./logs}:/var/log/app
+      # The prompts, mounted read-only over the copies baked into the image.
+      # This is what makes trying a different prompt an edit and a saved file
+      # instead of a four-minute rebuild: the app re-reads the file every turn.
+      - ./app/prompts:/app/prompts:ro
 
 volumes:
   db_data:
