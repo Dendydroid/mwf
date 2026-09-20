@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
+use tracing::log::error;
 
 pub const ASSISTANT_ENDPOINT_PATH: &str = "/assistant/handle-request";
 pub const MIMIC_CLIENT_PATH: &str = "/mimic-client";
@@ -93,6 +94,7 @@ async fn handle_assistant_request(
     Json(payload): Json<AssistantRequestPayload>,
 ) -> Result<Json<AssistantResponse>, ApiError> {
     let request_text = payload.request_text.trim();
+
     if request_text.is_empty() {
         return Err(ApiError::BadRequest(
             "request_text must not be empty".to_string(),
@@ -105,15 +107,26 @@ async fn handle_assistant_request(
         "handling assistant request"
     );
 
-    let decision = state.llm.classify(request_text).await?;
+    let decision = state.llm.classify(request_text, Arc::clone(&state)).await?;
+    
+    let selected_instruction = decision.field_str("selected_instruction").unwrap_or("none");
+    
+    let answer_context = match state.instructions.get(selected_instruction) {
+        Some(instruction) => instruction.run(Arc::clone(&state)).await.unwrap().to_string(),
+        None => {
+            error!("Could not find {selected_instruction} instruction in the registry");
+
+            String::new()
+        }
+    };
 
     // The whole decision, whatever shape the schema currently has, rather than
     // a hand-picked three fields that would silently stop covering it the next
-    // time the prompt gains a key. `selected_function` is pulled out as well
+    // time the prompt gains a key. `selected_instruction` is pulled out as well
     // because it is what anyone reading the log greps for first - and softly,
     // since the schema is free to rename it.
     info!(
-        selected_function = decision.field_str("selected_function").unwrap_or("none"),
+        selected_instruction = decision.field_str("selected_instruction").unwrap_or("none"),
         decision = %decision.fields_as_json(),
         "classified assistant request"
     );

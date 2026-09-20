@@ -9,6 +9,8 @@ use crate::vllm::VllmClient;
 use sqlx::Postgres;
 use std::sync::Arc;
 use reqwest::Client;
+use crate::domain::call::InstructionRegistry;
+use crate::domain::instructions::instructions;
 
 pub struct AppState {
     pub db: Database<Postgres>,
@@ -18,6 +20,7 @@ pub struct AppState {
     pub http_client: Client,
     pub settings: AppSettings,
     pub event_dispatcher: Dispatcher,
+    pub instructions: InstructionRegistry,
 }
 
 impl AppState {
@@ -32,6 +35,7 @@ impl AppState {
             http_client: Client::new(),
             settings,
             event_dispatcher: events(),
+            instructions: instructions(),
         }
     }
 }

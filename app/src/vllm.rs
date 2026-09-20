@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+use crate::app::AppState;
+use crate::domain::call::InstructionRegistry;
 
 /// The instructions the model is given for every utterance, read from a file.
 ///
@@ -305,13 +307,15 @@ impl VllmClient {
     /// function every time. `response_format` asks vLLM to constrain decoding to
     /// JSON, which is what makes parsing the content below safe enough to do
     /// directly.
-    pub async fn classify(&self, utterance: &str) -> Result<ActionDecision, VllmError> {
+    pub async fn classify(&self, utterance: &str, state: Arc<AppState>) -> Result<ActionDecision, VllmError> {
+        let enriched_system_prompt = state.instructions.get_instruction_list_for_llm(&*self.prompt.current().await.to_string());
+        dbg!(&enriched_system_prompt);
         let payload = ChatCompletionRequest {
             model: self.model.clone(),
             messages: vec![
                 Message {
                     role: "system".to_string(),
-                    content: self.prompt.current().await.to_string(),
+                    content: enriched_system_prompt,
                 },
                 Message {
                     role: "user".to_string(),

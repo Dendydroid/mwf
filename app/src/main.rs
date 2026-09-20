@@ -64,44 +64,6 @@ fn init_tracing(settings: &AppSettings) -> Option<WorkerGuard> {
     guard
 }
 
-async fn ai_prompt_loop(llm: &VllmClient) {
-    println!("Talking to {} - Ctrl-C to stop.", llm.model());
-
-    loop {
-        let mut next_prompt = String::new();
-
-        println!("Caller says >>>");
-        match io::stdin().read_line(&mut next_prompt) {
-            // Zero bytes means the input stream closed (Ctrl-D, or a piped file
-            // running out). Looping on that spins forever, so it ends the loop.
-            Ok(0) => break,
-            Ok(_) => (),
-            Err(e) => {
-                eprintln!("Error reading input: {e}");
-
-                continue;
-            }
-        }
-
-        let utterance = next_prompt.trim();
-        if utterance.is_empty() {
-            continue;
-        }
-
-        match llm.classify(utterance).await {
-            // The fields are printed as the JSON object they are, because the
-            // schema decides what is in them - a fixed format string here would
-            // stop showing whatever was added to the prompt last.
-            Ok(decision) => println!(
-                "Model answers >>> {}\n              >>> {}",
-                decision.humanlike_sentence_answer,
-                decision.fields_as_json()
-            ),
-            Err(e) => eprintln!("Model failed >>> {e}"),
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Settings first, because `LOG_DIR` decides where logging goes and nothing
@@ -122,14 +84,6 @@ async fn main() -> anyhow::Result<()> {
     //     .await?;
 
     info!("Database connected and migrations applied");
-
-    // The terminal loop is an alternative to serving, not a step before it: it
-    // owns stdin and never returns on its own.
-    if std::env::args().any(|argument| argument == PROMPT_LOOP_FLAG) {
-        ai_prompt_loop(&state.llm).await;
-
-        return Ok(());
-    }
 
     let app = Router::<Arc<AppState>>::new()
         .merge(routes::api::router())
