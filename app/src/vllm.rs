@@ -8,7 +8,42 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use crate::app::AppState;
-use crate::domain::call::InstructionRegistry;
+use crate::domain::call::Instruction;
+
+const USER_REQUEST_PLACEHOLDER: &str = "<user_request>";
+const ANSWER_CONTEXT_PLACEHOLDER: &str = "<answer_context>";
+
+/// Fills an answer prompt's `<user_request>` and `<answer_context>`.
+///
+/// One pass over the template rather than two `replace` calls: the utterance is
+/// caller-controlled, so a second pass would let a caller who types
+/// `<answer_context>` have their own text swapped for the handler's result -
+/// and the handler's result, which is data from elsewhere, could equally carry
+/// the other placeholder. Nothing that is inserted is ever scanned again.
+fn render_answer_prompt(template: &str, utterance: &str, answer_context: &str) -> String {
+    template
+        .split(USER_REQUEST_PLACEHOLDER)
+        .map(|part| part.replace(ANSWER_CONTEXT_PLACEHOLDER, answer_context))
+        .collect::<Vec<_>>()
+        .join(utterance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_answer_prompt;
+
+    #[test]
+    fn injects_both_values() {
+        let out = render_answer_prompt("Q: <user_request>\nC: <answer_context>", "hi", "sunny");
+        assert_eq!(out, "Q: hi\nC: sunny");
+    }
+
+    #[test]
+    fn inserted_text_is_not_rescanned() {
+        let out = render_answer_prompt("<user_request>|<answer_context>", "<answer_context>", "<user_request>");
+        assert_eq!(out, "<answer_context>|<user_request>");
+    }
+}
 
 /// The instructions the model is given for every utterance, read from a file.
 ///
@@ -225,6 +260,15 @@ pub enum VllmError {
     #[error("vLLM returned no choices")]
     NoChoices,
 
+    /// The instruction's answer prompt file is missing or unreadable. Unlike the
+    /// system prompt there is no last good copy to fall back on, and answering
+    /// from nothing would be worse than failing.
+    #[error("could not read the answer prompt at {}: {source}", path.display())]
+    AnswerPrompt {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
     /// The answer was cut off at `max_tokens`, so it cannot parse - and it is
     /// our cap that did it, not the model misbehaving. Raise
     /// `llm_settings.max_tokens` if real answers legitimately run this long.
@@ -251,6 +295,9 @@ pub struct VllmClient {
     /// Shared rather than owned: the client is cloned, and every clone has to
     /// see the same prompt - including the same reload of it.
     prompt: Arc<SystemPrompt>,
+    /// Where the per-instruction answer prompts live: next to the system
+    /// prompt, so they follow it between a dev machine and the container.
+    prompts_dir: PathBuf,
     http: reqwest::Client,
     /// Fully-qualified completions URL, resolved once at startup.
     completions_url: String,
@@ -276,6 +323,10 @@ impl VllmClient {
 
         Self {
             prompt: Arc::new(prompt),
+            prompts_dir: Path::new(settings.llm_system_prompt_file())
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default(),
             http,
             completions_url: Self::completions_url(settings.llm_url()),
             model: settings.llm_model().to_string(),
@@ -310,18 +361,53 @@ impl VllmClient {
     pub async fn classify(&self, utterance: &str, state: Arc<AppState>) -> Result<ActionDecision, VllmError> {
         let enriched_system_prompt = state.instructions.get_instruction_list_for_llm(&*self.prompt.current().await.to_string());
         dbg!(&enriched_system_prompt);
+
+        self.complete(vec![
+            Message {
+                role: "system".to_string(),
+                content: enriched_system_prompt,
+            },
+            Message {
+                role: "user".to_string(),
+                content: utterance.to_string(),
+            },
+        ])
+        .await
+    }
+
+    /// Second step for [`InstructionType::GetInformation`]: the handler has
+    /// already fetched the facts, and this turns them into the sentence the
+    /// caller hears.
+    ///
+    /// The prompt is the instruction's own file (see
+    /// [`Instruction::answer_prompt_file`]) with the utterance and the handler's
+    /// result injected. It goes out as a single `user` message because that is
+    /// the shape the prompt is written in (`User request: ... Answer context:
+    /// ...`), and it is read per call like the system prompt, so it can be
+    /// edited without a restart.
+    pub async fn instruction_get_information_create_answer(
+        &self,
+        utterance: &str,
+        instruction: &Instruction,
+        answer_context: &str,
+    ) -> Result<ActionDecision, VllmError> {
+        let path = self.prompts_dir.join(instruction.answer_prompt_file());
+        let template = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|source| VllmError::AnswerPrompt { path, source })?;
+
+        self.complete(vec![Message {
+            role: "user".to_string(),
+            content: render_answer_prompt(template.trim_end(), utterance, answer_context),
+        }])
+        .await
+    }
+
+    /// Sends one chat completion and parses the JSON the model answers with.
+    async fn complete(&self, messages: Vec<Message>) -> Result<ActionDecision, VllmError> {
         let payload = ChatCompletionRequest {
             model: self.model.clone(),
-            messages: vec![
-                Message {
-                    role: "system".to_string(),
-                    content: enriched_system_prompt,
-                },
-                Message {
-                    role: "user".to_string(),
-                    content: utterance.to_string(),
-                },
-            ],
+            messages,
             temperature: self.temperature,
             response_format: ResponseFormat {
                 kind: "json_object".to_string(),

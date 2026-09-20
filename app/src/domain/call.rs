@@ -56,6 +56,22 @@ impl Instruction {
     pub async fn run(&self, state: Arc<AppState>) -> HandlerResult {
         (self.handler)(state).await
     }
+
+    pub fn unique_key(&self) -> &str {
+        &self.unique_key
+    }
+
+    pub fn is_get_information(&self) -> bool {
+        matches!(self.instruction_type, InstructionType::GetInformation)
+    }
+
+    /// The file, inside the prompts directory, holding the prompt that turns
+    /// this instruction's result into an answer. Derived from the key so that
+    /// adding an instruction means adding one file next to the others, with no
+    /// name to register anywhere.
+    pub fn answer_prompt_file(&self) -> String {
+        format!("{}_prompt.txt", self.unique_key)
+    }
 }
 
 pub struct InstructionRegistry {

@@ -109,14 +109,40 @@ async fn handle_assistant_request(
 
     let decision = state.llm.classify(request_text, Arc::clone(&state)).await?;
     
-    let selected_instruction = decision.field_str("selected_instruction").unwrap_or("none");
-    
-    let answer_context = match state.instructions.get(selected_instruction) {
-        Some(instruction) => instruction.run(Arc::clone(&state)).await.unwrap().to_string(),
+    let selected_instruction = decision
+        .field_str("selected_instruction")
+        .unwrap_or("none")
+        .to_string();
+
+    // For `GetInformation` the first decision only says *what* was asked. The
+    // handler fetches the facts and a second call words them, so that decision
+    // replaces the first as the response. Anything else, or a failure to fetch,
+    // keeps the classification's own answer.
+    let decision = match state.instructions.get(&selected_instruction) {
+        Some(instruction) if instruction.is_get_information() => {
+            match instruction.run(Arc::clone(&state)).await {
+                Ok(answer_context) => {
+                    state
+                        .llm
+                        .instruction_get_information_create_answer(
+                            request_text,
+                            instruction,
+                            &answer_context,
+                        )
+                        .await?
+                }
+                Err(e) => {
+                    error!("Instruction {selected_instruction} failed: {e:#}");
+
+                    decision
+                }
+            }
+        }
+        Some(_) => decision,
         None => {
             error!("Could not find {selected_instruction} instruction in the registry");
 
-            String::new()
+            decision
         }
     };
 
