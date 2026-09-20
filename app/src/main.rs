@@ -1,7 +1,9 @@
 mod app;
 mod cache;
 mod db;
+mod domain;
 mod error;
+mod event;
 mod factory;
 mod routes;
 mod session;
@@ -13,6 +15,7 @@ use crate::routes::middleware::session_middleware;
 use crate::settings::AppSettings;
 use crate::vllm::VllmClient;
 use axum::{middleware, Router};
+use std::any::TypeId;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,25 +26,10 @@ use tracing::log::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-/// The flag that runs the terminal loop instead of the HTTP server.
 const PROMPT_LOOP_FLAG: &str = "--prompt-loop";
 
-/// Base name of the rolling log files. `tracing_appender` appends the date, so
-/// the mounted directory fills with `app.log.2026-09-17`, one per day.
 const LOG_FILE_PREFIX: &str = "app.log";
 
-/// Sets up logging, and - when `LOG_DIR` is configured - a second copy of every
-/// line into a daily rolling file there.
-///
-/// Two layers rather than one because they serve different readers: `docker
-/// logs` wants the stdout stream, and anything looking at yesterday's incident
-/// wants a file that outlives the container. The file layer turns ANSI colour
-/// off, which the terminal layer keeps - escape codes are what make a log file
-/// unreadable in an editor and unmatchable by `grep`.
-///
-/// The returned guard must stay alive for as long as the process logs: writing
-/// is done on a background thread and dropping the guard is what flushes it.
-/// Dropping it early silently truncates the file at that point.
 fn init_tracing(settings: &AppSettings) -> Option<WorkerGuard> {
     let (file_layer, guard) = match settings.log_dir() {
         Some(directory) => {
@@ -50,9 +38,10 @@ fn init_tracing(settings: &AppSettings) -> Option<WorkerGuard> {
             std::fs::create_dir_all(directory)
                 .unwrap_or_else(|e| panic!("Could not create log directory {directory}: {e}"));
 
-            let (writer, guard) = tracing_appender::non_blocking(
-                tracing_appender::rolling::daily(directory, LOG_FILE_PREFIX),
-            );
+            let (writer, guard) = tracing_appender::non_blocking(tracing_appender::rolling::daily(
+                directory,
+                LOG_FILE_PREFIX,
+            ));
 
             (
                 Some(
@@ -75,16 +64,6 @@ fn init_tracing(settings: &AppSettings) -> Option<WorkerGuard> {
     guard
 }
 
-/// The original read-a-line, classify, print loop - kept, because trying a
-/// sentence against the model from a terminal is still the quickest way to see
-/// what the prompt does.
-///
-/// Two things changed. It now goes through [`VllmClient`], so it uses the same
-/// prompt, the same sampling and the same parsing as the HTTP endpoint - trying
-/// something here now actually tells you what `/assistant/handle-request` would
-/// answer. And it no longer runs on every startup: it read `stdin` forever,
-/// which meant `main` never reached `axum::serve` and the server never came up.
-/// It runs only behind `--prompt-loop`.
 async fn ai_prompt_loop(llm: &VllmClient) {
     println!("Talking to {} - Ctrl-C to stop.", llm.model());
 

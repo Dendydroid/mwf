@@ -1,0 +1,505 @@
+/* ==========================================================================
+   Call Assistant Engineering Handbook - print stylesheet
+   Rendered by Paged.js under headless Chrome. See build.py.
+   System fonts only: the PDF must render identically with no network.
+   ========================================================================== */
+
+:root {
+  --ink:        #16181d;
+  --ink-soft:   #4a5160;
+  --ink-faint:  #858d9c;
+  --rule:       #d8dce3;
+  --rule-soft:  #eceef2;
+  --accent:     #0f5b6e;
+  --accent-dim: #4d8998;
+  --warn:       #8a4b1f;
+  --warn-bg:    #fdf6ef;
+  --repo:       #1f5130;
+  --repo-bg:    #f2f8f4;
+  --rule-bg:    #f3f6f8;
+  --code-bg:    #f6f7f9;
+}
+
+/* ---------- page geometry ------------------------------------------------ */
+
+@page {
+  size: A4;
+  margin: 20mm 21mm 18mm 21mm;
+}
+
+@page :left {
+  @bottom-left   { content: counter(page); font: 8pt "Segoe UI", sans-serif; color: #858d9c; }
+  @top-left      { content: string(parttitle); font: 7.5pt "Segoe UI", sans-serif;
+                   color: #858d9c; letter-spacing: .07em; text-transform: uppercase; }
+}
+
+@page :right {
+  @bottom-right  { content: counter(page); font: 8pt "Segoe UI", sans-serif; color: #858d9c; }
+  @top-right     { content: string(chaptertitle); font: 7.5pt "Segoe UI", sans-serif;
+                   color: #858d9c; letter-spacing: .07em; }
+}
+
+@page cover  { margin: 0; @bottom-left { content: none; } @bottom-right { content: none; }
+               @top-left { content: none; } @top-right { content: none; } }
+@page front  { @bottom-left { content: none; } @bottom-right { content: none; }
+               @top-left { content: none; } @top-right { content: none; } }
+
+/* ---------- base --------------------------------------------------------- */
+
+html { font-size: 10.5pt; }
+
+body {
+  font-family: Georgia, "Iowan Old Style", Charter, "Times New Roman", serif;
+  color: var(--ink);
+  line-height: 1.52;
+  margin: 0;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+  text-align: justify;
+  text-justify: inter-word;
+}
+
+p { margin: 0 0 .62em 0; orphans: 2; widows: 2; }
+
+a { color: var(--accent); text-decoration: none; }
+
+strong { font-weight: 700; }
+em { font-style: italic; }
+
+/* ---------- headings ----------------------------------------------------- */
+
+h1, h2, h3, h4 {
+  font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+  hyphens: none;
+}
+
+.part-opener {
+  break-before: page;
+  padding-top: 38mm;
+  border: 0;
+}
+/* Folios start at the first part opener; the front matter carries none. */
+.part-opener.first { counter-reset: page 1; }
+/* The part number is written once, as data-part on the <h1>, because build.py
+   reads that same attribute to label the part in the table of contents. A
+   separate kicker element would be a second place to keep it correct. */
+.part-opener h1::before {
+  content: attr(data-part);
+  display: block;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 8.5pt;
+  font-weight: 600;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+  margin-bottom: 5mm;
+}
+.part-opener h1 {
+  font-size: 26pt;
+  line-height: 1.12;
+  margin: 0 0 6mm 0;
+  letter-spacing: -.015em;
+  string-set: parttitle content(text);
+}
+.part-opener .part-blurb {
+  font-size: 11pt;
+  color: var(--ink-soft);
+  line-height: 1.5;
+  max-width: 105mm;
+  text-align: left;
+  font-style: italic;
+}
+.part-opener .part-contents {
+  margin-top: 12mm;
+  padding-top: 4mm;
+  border-top: 1px solid var(--rule);
+  font-family: "Segoe UI", sans-serif;
+  font-size: 9pt;
+  color: var(--ink-soft);
+  text-align: left;
+}
+.part-opener .part-contents div { margin-bottom: 1.8mm; break-inside: avoid; }
+.part-opener .part-contents .n { color: var(--accent-dim); font-variant-numeric: tabular-nums; }
+
+h2 {
+  font-size: 15pt;
+  line-height: 1.2;
+  margin: 0 0 3.5mm 0;
+  padding-top: 1mm;
+  letter-spacing: -.01em;
+  break-before: page;
+  break-after: avoid;
+  string-set: chaptertitle content(text);
+}
+h2.cont { break-before: auto; margin-top: 9mm; }
+/* The chapter number is written as a bare digit so the generated contents can
+   reuse it as a digit; the word is added here, in one place. */
+h2 .num {
+  display: block;
+  font-size: 8pt;
+  letter-spacing: .2em;
+  color: var(--accent-dim);
+  text-transform: uppercase;
+  margin-bottom: 2mm;
+  font-weight: 600;
+}
+h2 .num::before { content: "Chapter "; }
+h2.appendix .num::before { content: "Appendix "; }
+
+h3 {
+  font-size: 11pt;
+  margin: 6.5mm 0 2mm 0;
+  break-after: avoid;
+  color: var(--ink);
+}
+
+h4 {
+  font-size: 9.5pt;
+  margin: 5mm 0 1.5mm 0;
+  break-after: avoid;
+  color: var(--ink-soft);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+/* ---------- lists -------------------------------------------------------- */
+
+ul, ol { margin: 0 0 .7em 0; padding-left: 5.5mm; }
+li { margin-bottom: .3em; orphans: 2; widows: 2; }
+li > ul, li > ol { margin-top: .3em; }
+ul.tight li, ol.tight li { margin-bottom: .12em; }
+ul.plain { list-style: none; padding-left: 0; }
+
+dl { margin: 0 0 .7em 0; }
+dt { font-weight: 700; font-size: 9.6pt; margin-top: .5em; }
+dd { margin: 0 0 .3em 0; padding-left: 5mm; }
+
+/* ---------- code --------------------------------------------------------- */
+
+code, kbd, samp {
+  font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace;
+  font-size: .855em;
+  hyphens: none;
+}
+
+p code, li code, td code, dt code, dd code, .box code {
+  background: var(--code-bg);
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  padding: 0 .28em;
+  white-space: nowrap;
+}
+
+pre {
+  font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace;
+  font-size: 8.1pt;
+  line-height: 1.42;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-left: 2.5px solid var(--accent-dim);
+  border-radius: 2px;
+  padding: 2.6mm 3.2mm;
+  margin: 0 0 3mm 0;
+  white-space: pre;
+  break-inside: avoid;
+  text-align: left;
+  hyphens: none;
+  color: #23262c;
+}
+pre code { background: none; border: 0; padding: 0; white-space: pre; font-size: 1em; }
+pre.wide { font-size: 7.4pt; }
+pre.long { break-inside: auto; }
+pre .c { color: #7b8494; font-style: italic; }
+pre .k { color: #0f5b6e; font-weight: 600; }
+pre .s { color: #7a4326; }
+pre .hl { background: #fff2cc; }
+
+figure { margin: 0 0 3.5mm 0; break-inside: avoid; }
+figcaption {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 8pt;
+  color: var(--ink-faint);
+  margin-top: 1.2mm;
+  text-align: left;
+}
+
+/* ---------- tables ------------------------------------------------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 8.4pt;
+  margin: 0 0 3.5mm 0;
+  break-inside: avoid;
+  text-align: left;
+}
+table.long { break-inside: auto; }
+table.long tr { break-inside: avoid; }
+th {
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1.2px solid var(--ink-soft);
+  padding: 1.4mm 2.4mm 1.2mm 0;
+  vertical-align: bottom;
+  color: var(--ink);
+  line-height: 1.3;
+}
+td {
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 1.3mm 2.4mm 1.3mm 0;
+  vertical-align: top;
+  line-height: 1.34;
+}
+td:last-child, th:last-child { padding-right: 0; }
+td code { font-size: .92em; white-space: nowrap; }
+.num-col { font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.total td { border-top: 1.2px solid var(--ink-soft); border-bottom: 0; font-weight: 600; }
+
+/* ---------- callouts ----------------------------------------------------- */
+
+.box {
+  break-inside: avoid;
+  margin: 0 0 3.5mm 0;
+  padding: 2.6mm 3.2mm 2.2mm 3.2mm;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-size: 9.2pt;
+  line-height: 1.46;
+  text-align: left;
+}
+.box .box-label {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 7.4pt;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 1.6mm;
+}
+.box p:last-child, .box ul:last-child, .box ol:last-child, .box pre:last-child { margin-bottom: 0; }
+.box pre { font-size: 7.8pt; background: #fff; }
+
+.box.rule    { background: var(--rule-bg); border-color: #c5d6dc; }
+.box.rule    .box-label { color: var(--accent); }
+.box.trap    { background: var(--warn-bg); border-color: #e8d3bd; }
+.box.trap    .box-label { color: var(--warn); }
+.box.repo    { background: var(--repo-bg); border-color: #c8dfd0; }
+.box.repo    .box-label { color: var(--repo); }
+.box.measure { background: #fbfbfc; border-color: var(--rule); }
+.box.measure .box-label { color: var(--ink-soft); }
+
+.xref {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 8.2pt;
+  color: var(--accent-dim);
+  font-style: normal;
+}
+
+.pull {
+  font-size: 12pt;
+  line-height: 1.4;
+  color: var(--accent);
+  font-style: italic;
+  margin: 4mm 0 4mm 0;
+  padding-left: 4mm;
+  border-left: 2px solid var(--accent-dim);
+  text-align: left;
+  break-inside: avoid;
+}
+
+blockquote {
+  margin: 0 0 3mm 0;
+  padding-left: 4mm;
+  border-left: 2px solid var(--rule);
+  color: var(--ink-soft);
+  font-size: 9.6pt;
+  text-align: left;
+}
+blockquote .attrib {
+  display: block;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 8pt;
+  color: var(--ink-faint);
+  margin-top: 1mm;
+  font-style: normal;
+}
+
+hr.sep {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 5mm auto 5mm auto;
+  width: 30%;
+}
+
+/* ---------- cover -------------------------------------------------------- */
+
+.cover {
+  page: cover;
+  break-after: page;
+  height: 257mm;
+  box-sizing: border-box;
+  padding: 40mm 3mm 0 3mm;
+}
+.cover .eyebrow {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 9pt;
+  letter-spacing: .3em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+  margin-bottom: 12mm;
+}
+.cover h1 {
+  font-family: Georgia, serif;
+  font-size: 38pt;
+  line-height: 1.06;
+  letter-spacing: -.02em;
+  margin: 0 0 8mm 0;
+  color: var(--ink);
+  font-weight: 400;
+}
+.cover .sub {
+  font-size: 13pt;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  max-width: 120mm;
+  font-style: italic;
+  text-align: left;
+}
+.cover .rulebar {
+  width: 34mm;
+  height: 2px;
+  background: var(--accent-dim);
+  margin: 12mm 0 12mm 0;
+}
+.cover .meta {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 9pt;
+  line-height: 1.8;
+  color: var(--ink-soft);
+  text-align: left;
+}
+.cover .meta b { color: var(--ink); font-weight: 600; }
+.cover .footnote {
+  margin-top: 30mm;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 8pt;
+  color: var(--ink-faint);
+  line-height: 1.6;
+  text-align: left;
+  border-top: 1px solid var(--rule);
+  padding-top: 3mm;
+}
+
+/* ---------- front matter ------------------------------------------------- */
+
+.front { page: front; break-before: page; }
+.front h1 {
+  font-size: 19pt;
+  margin: 0 0 5mm 0;
+  letter-spacing: -.01em;
+}
+.front .lede { font-size: 11pt; color: var(--ink-soft); line-height: 1.5; text-align: left; }
+
+/* ---------- table of contents -------------------------------------------- */
+
+.toc { page: front; break-before: page; }
+.toc h1 { font-size: 19pt; margin: 0 0 6mm 0; font-family: "Segoe UI", sans-serif; font-weight: 600; }
+.toc .toc-part {
+  font-family: "Segoe UI", sans-serif;
+  font-size: 9.5pt;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 4.5mm 0 1.6mm 0;
+  letter-spacing: .01em;
+  break-after: avoid;
+}
+.toc .toc-part:first-of-type { margin-top: 0; }
+/* Leader dots are a flex spacer with a dotted bottom border rather than CSS
+   leader(), which Paged.js does not implement - and when leader() fails the
+   whole content value is dropped, taking the page number with it. */
+.toc a {
+  display: flex;
+  align-items: baseline;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 8.8pt;
+  color: var(--ink);
+  text-decoration: none;
+  margin-bottom: 1.1mm;
+  line-height: 1.32;
+}
+.toc a .t { flex: 0 1 auto; }
+.toc a .dots {
+  flex: 1 1 auto;
+  min-width: 4mm;
+  margin: 0 1.6mm;
+  border-bottom: 1px dotted #b9c0cb;
+  transform: translateY(-.28em);
+}
+.toc a::after {
+  content: target-counter(attr(href), page);
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.toc .ch-n {
+  flex: 0 0 auto;
+  min-width: 6.5mm;
+  color: var(--accent-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- bibliography ------------------------------------------------- */
+
+/* Paged.js clones this wrapper when it splits across pages, and the clone does
+   not reliably inherit the left alignment - which shows up as justified,
+   word-gapped bibliography entries on every page after the first. Setting it on
+   the descendants too survives the split. */
+.bib, .bib * { text-align: left; }
+.bib h3 { font-size: 10pt; margin-top: 6mm; color: var(--accent); }
+.bib .entry { margin-bottom: 2.6mm; font-size: 9pt; line-height: 1.42; break-inside: avoid; }
+.bib .entry .t { font-weight: 700; }
+.bib .entry .u {
+  display: block;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 7.2pt;
+  color: var(--accent-dim);
+  word-break: break-all;
+  margin-top: .4mm;
+}
+.bib .entry .why { color: var(--ink-soft); }
+
+/* ---------- checklists --------------------------------------------------- */
+
+ul.check { list-style: none; padding-left: 0; }
+ul.check li {
+  padding-left: 6mm;
+  position: relative;
+  margin-bottom: .42em;
+  text-align: left;
+}
+ul.check li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .28em;
+  width: 3.1mm;
+  height: 3.1mm;
+  border: 1px solid var(--ink-soft);
+  border-radius: 1px;
+}
+
+/* ---------- glossary ----------------------------------------------------- */
+
+.gloss dt { color: var(--accent); font-size: 9.4pt; }
+.gloss dd { font-size: 9.2pt; color: var(--ink); margin-bottom: 1.8mm; text-align: left; }
+
+/* ---------- screen preview (not print) ----------------------------------- */
+
+@media screen {
+  body { background: #8c9199; }
+  .pagedjs_page { background: #fff; margin: 8mm auto; box-shadow: 0 1px 8px rgba(0,0,0,.35); }
+}

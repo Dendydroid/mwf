@@ -1,0 +1,381 @@
+<section class="part-opener">
+  <h1 id="p6" data-part="Part VI">Voice realities</h1>
+  <p class="part-blurb">Everything in this Part follows from one fact: the
+  caller cannot see, cannot scroll, and cannot re-read. A spoken sentence exists
+  for two seconds and then only in someone's memory. That constraint invalidates
+  most of what is known about designing forms, and the discipline that replaces
+  it is older and better documented than the model at the centre of the
+  system.</p>
+  <div class="part-contents">
+    <div><span class="n">32</span> &nbsp; The caller cannot scroll</div>
+    <div><span class="n">33</span> &nbsp; Confirmation: what, and how much</div>
+    <div><span class="n">34</span> &nbsp; Reading values back</div>
+    <div><span class="n">35</span> &nbsp; No-match, no-input, and the third strike</div>
+    <div><span class="n">36</span> &nbsp; Handing off to a human</div>
+    <div><span class="n">37</span> &nbsp; Language, and staying in it</div>
+  </div>
+</section>
+
+<h2 id="c32"><span class="num">32</span> The caller cannot scroll</h2>
+
+<p>A handful of rules, each of which is a consequence of the same constraint.</p>
+
+<dl>
+  <dt>One question per turn</dt>
+  <dd>Two questions in one sentence gets one answer, and it is ambiguous which
+  question it answered. This is not a model limitation; it is how people respond
+  to compound questions.</dd>
+
+  <dt>At most three options, and put them last</dt>
+  <dd>Recall of a spoken list collapses past three, and the last item is
+  remembered best. &ldquo;Would you like morning, afternoon, or
+  evening?&rdquo;, never a list of six times.</dd>
+
+  <dt>The question goes at the end</dt>
+  <dd>Context first, question last. A caller who hears the question first stops
+  listening to the context and answers immediately.</dd>
+
+  <dt>Acknowledge, then proceed</dt>
+  <dd>A one-word acknowledgement before the next question tells the caller they
+  were heard. Without it every turn feels like the system might not have
+  registered the last one.</dd>
+
+  <dt>Never read out what belongs on a screen</dt>
+  <dd>Reference numbers, URLs, opening hours for seven days. If it has to be
+  conveyed, it goes to an SMS or an email, and the call says so.</dd>
+</dl>
+
+<h3>Say what is happening</h3>
+
+<p>The caller must always know whether the system is listening, working, or
+speaking. Silence is the ambiguous state and it is the one that breaks
+conversations &mdash; a caller who is not sure whether they were heard will
+speak again, and the barge-in that follows costs a whole turn.
+<span class="xref">&rarr; &sect;IX, Chapter&nbsp;48</span></p>
+
+<p>Where an action takes a noticeable time &mdash; a lookup, an availability
+check &mdash; the sentence that precedes it is doing real work: <em>&ldquo;Let
+me check that for you.&rdquo;</em> It converts dead air into an expected pause.
+The realtime prompting guidance calls these tool preambles and treats them as
+part of the tool's definition rather than as decoration, which is the right
+place for them.</p>
+
+<h2 id="c33"><span class="num">33</span> Confirmation: what, and how much</h2>
+
+<p>Confirmations prevent mistakes and cost turns. The working principle is
+narrow: <strong>confirm what is expensive to get wrong, and nothing else.</strong>
+High-risk actions &mdash; payments, cancellations, account changes &mdash; are
+confirmed clearly; low-risk lookups are not confirmed at all.</p>
+
+<h3>The three strategies</h3>
+
+<table class="long">
+  <tr><th style="width:18%">Strategy</th><th style="width:30%">Sounds like</th><th style="width:16%">Costs</th><th>Use for</th></tr>
+  <tr>
+    <td><strong>None</strong></td>
+    <td>&ldquo;And how many people?&rdquo;</td>
+    <td>0 turns</td>
+    <td>Low-stakes, easily corrected later, high recognition confidence</td>
+  </tr>
+  <tr>
+    <td><strong>Implicit</strong></td>
+    <td>&ldquo;The second of October &mdash; and how many people?&rdquo;</td>
+    <td>0 turns</td>
+    <td><strong>The default.</strong> Most collected slots</td>
+  </tr>
+  <tr>
+    <td><strong>Explicit</strong></td>
+    <td>&ldquo;That's the second of October. Is that right?&rdquo;</td>
+    <td>1 turn</td>
+    <td>Irreversible actions, identifiers, money, anything read from a lookup</td>
+  </tr>
+</table>
+
+<p>Implicit confirmation is the technique worth internalising: the value is read
+back <em>inside the next question</em>, so the caller can object but is not
+required to agree. It costs nothing and catches most recognition errors, because
+a caller who hears the wrong date will interrupt.</p>
+
+<p>The failure mode of over-confirming is not merely slowness. A caller asked
+&ldquo;is that right?&rdquo; five times stops listening and says yes
+reflexively, which means the sixth confirmation &mdash; the one that mattered
+&mdash; is worthless. Confirmation is a budget, and spending it on a party size
+means not having it for a payment.</p>
+
+<h3>Batch the explicit confirmation</h3>
+
+<p>Rather than confirming each field as it is collected, collect them and read
+the whole thing back once at the end. One turn instead of four, and the caller
+hears the booking as a booking rather than as a sequence of disconnected
+facts.</p>
+
+<p>The cost is the trap from Chapter&nbsp;9: the review stage must accept a
+correction to one field, not just a yes or a no. &ldquo;No, the date's
+wrong&rdquo; is a yes to everything else.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>ai_autocalls_rust</code> models both: <code>ConfirmingField
+  { index }</code> for per-field explicit confirmation and
+  <code>ReviewingSummary</code> for the batch at the end, with
+  <code>form_review.rs</code> handling the latter. Per-field confirmation is
+  therefore a <em>property of the field</em>, which is where it belongs &mdash;
+  in the manifest, next to the type and the validator (Chapter&nbsp;16).</p>
+  <p>One detail from that codebase is worth copying exactly: yes/no goes through
+  the ordinary parser, and that parser <strong>checks negatives first</strong>.
+  &ldquo;That's not right&rdquo; and German &ldquo;stimmt nicht&rdquo; both
+  <em>contain</em> a positive word. The same function confirms a date of birth
+  and accepts a final booking, so getting the order wrong there is not a
+  detail.</p>
+</div>
+
+<h2 id="c34"><span class="num">34</span> Reading values back</h2>
+
+<p>Text-to-speech engines handle ordinary prose well and handle exactly the
+patterns a form produces badly: identifiers, dates in regional formats, phone
+numbers with international prefixes, currency. These were rare in training data
+and are the entire output of a booking flow.</p>
+
+<h3>The architectural rule</h3>
+
+<p class="pull">The model emits structure. Code renders speech.</p>
+
+<p>A model asked to produce a spoken form of a date will produce a good one most
+of the time. &ldquo;Most of the time&rdquo; is unacceptable for the one sentence
+whose whole purpose is letting the caller verify a value. Rendering a typed
+value into speech is a total function over a small set of types, it is testable,
+and it cannot drift.</p>
+
+<p>This is the general form of the argument in <code>forms/value.rs</code>:
+read-back is a method on the value, per kind, and the compiler lists every match
+arm so a new answer kind cannot forget it.</p>
+
+<h3>The table</h3>
+
+<table class="long">
+  <tr><th style="width:18%">Type</th><th style="width:26%">Do not say</th><th style="width:30%">Say</th><th>Mechanism</th></tr>
+  <tr>
+    <td>Reference code</td><td><code>I5DF3</code></td>
+    <td>&ldquo;I &mdash; 5 &mdash; D &mdash; F &mdash; 3&rdquo;</td>
+    <td>Spell it; <code>&lt;say-as interpret-as="characters"&gt;</code></td>
+  </tr>
+  <tr>
+    <td>Date</td><td><code>1987-03-05</code></td>
+    <td>The way that language says dates</td>
+    <td>Render per locale; never emit ISO into speech</td>
+  </tr>
+  <tr>
+    <td>Phone number</td><td><code>+441632960123</code></td>
+    <td>Grouped, with pauses</td>
+    <td><code>&lt;say-as interpret-as="telephone"&gt;</code>, or insert spaces</td>
+  </tr>
+  <tr>
+    <td>Money</td><td><code>42.50</code></td>
+    <td>&ldquo;forty-two pounds fifty&rdquo;</td>
+    <td>Render with the currency name</td>
+  </tr>
+  <tr>
+    <td>Choice</td><td>The database value</td><td>The human label</td>
+    <td>The option list carries both</td>
+  </tr>
+  <tr>
+    <td>Time</td><td><code>14:00</code></td><td>&ldquo;two in the afternoon&rdquo;</td>
+    <td>24-hour clock read aloud is ambiguous in most languages</td>
+  </tr>
+</table>
+
+<h3>The date trap, specifically</h3>
+
+<p><code>04/05/2026</code> is the 4th of May in most of the world and the 5th of
+April in the United States. A system serving <code>de|en|ru</code> has three
+conventions in play. The resolution is that <strong>a date never exists as a
+formatted string inside the system</strong> &mdash; it is a date type from the
+moment it is parsed until the moment it is rendered, and it is rendered
+differently for storage, for display and for speech.</p>
+
+<h3>Confirm digit by digit, then check the whole</h3>
+
+<p>When reading an identifier back for verification, group it: &ldquo;that's I,
+5, D, F, 3 &mdash; I5DF3&rdquo;. The spelled version is what the caller checks
+against the letters in front of them; the whole version is what they recognise.
+Either alone is worse than both.</p>
+
+<div class="box trap">
+  <span class="box-label">Trap</span>
+  <p>Modern neural synthesisers normalise most text acceptably without SSML,
+  which is why this is easy to skip in testing with clean English input. It
+  degrades quietly: a German date read with English conventions, a reference
+  code pronounced as a word, a price read as a decimal number. None of these
+  raise an error and all of them produce a caller who confirms the wrong value
+  &mdash; which is worse than a caller who could not hear it, because the system
+  now has a confirmed wrong value.</p>
+</div>
+
+<h2 id="c35"><span class="num">35</span> No-match, no-input, and the third strike</h2>
+
+<p>Two failures, and they need different sentences.</p>
+
+<dl>
+  <dt>No-input</dt>
+  <dd>Silence. They did not hear, are distracted, or the audio path failed. The
+  right response repeats the question, usually verbatim.</dd>
+  <dt>No-match</dt>
+  <dd>They spoke and it could not be understood. The right response
+  <em>changes</em> &mdash; repeating the same question is the single most
+  frustrating behaviour a phone system has.</dd>
+</dl>
+
+<h3>The escalation</h3>
+
+<table>
+  <tr><th style="width:16%">Attempt</th><th style="width:40%">No-input</th><th>No-match</th></tr>
+  <tr><td class="num-col">1</td><td>Repeat verbatim</td><td>Rephrase, shorter</td></tr>
+  <tr><td class="num-col">2</td><td>Rephrase, add the format</td><td>Narrow it: offer two or three choices, or ask for a digit</td></tr>
+  <tr><td class="num-col">3</td><td colspan="2"><strong>Hand off.</strong> Do not ask a fourth time</td></tr>
+</table>
+
+<p>Three is the documented convention &mdash; Dialogflow CX's voice-agent
+guidance is explicit about a maximum of three no-match/no-input events per page,
+escalating to a human on the third. It is not arbitrary: by the third failure
+the problem is usually the audio path, the accent, or a question the caller
+cannot answer, and none of those improve with a fourth attempt.</p>
+
+<h3>Narrowing beats repeating</h3>
+
+<p>Attempt 2 for a no-match should reduce the answer space, not restate the
+question. An open question that failed twice will fail a third time; a closed
+one might not.</p>
+
+<pre><code>ask:      "What date would you like?"
+no-match: "Sorry - what day were you thinking of?"
+no-match: "Let's try this - would you prefer this week or next?"
+                                              <span class="c">// two options, not a date</span></code></pre>
+
+<p>This also changes the parser in play: a choice parser is far more forgiving
+than a date parser, so the narrowed question is more likely to succeed for
+reasons beyond the wording.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>FormProgress::attempts</code> is this counter, and its doc comment
+  carries the rule that is easiest to get wrong: it is <strong>not incremented
+  when the caller asks a reasonable question</strong> instead of answering
+  &mdash; <em>&ldquo;they did not fail, they asked something&rdquo;</em>. Without
+  that exception, a caller who asks two clarifying questions about a form is
+  transferred to a human for being engaged. The counter resets whenever an
+  answer lands.</p>
+</div>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>The re-prompt must differ from the prompt, and the third failure ends the
+  attempt. Put the variety in the prompt layer as an explicit instruction plus
+  two differently-shaped examples (Chapter&nbsp;13); put the counting and the
+  escalation in code (Chapter&nbsp;8). Neither works alone.</p>
+</div>
+
+<h2 id="c36"><span class="num">36</span> Handing off to a human</h2>
+
+<h3>The three shapes</h3>
+
+<dl>
+  <dt>Cold transfer</dt>
+  <dd>Route and disconnect. Fine for department routing where context does not
+  matter.</dd>
+  <dt>Warm transfer with introduction</dt>
+  <dd>The agent briefs the human before connecting. The default for anything
+  where what has already been said shapes what the human says next.</dd>
+  <dt>Conferenced</dt>
+  <dd>The system stays on the line and keeps working &mdash; notes, CRM updates,
+  follow-up scheduling &mdash; while the human talks.</dd>
+</dl>
+
+<h3>What triggers one</h3>
+
+<ul class="tight">
+  <li>Confidence below the per-intent threshold (Chapter&nbsp;23).</li>
+  <li>Three failures on one step (Chapter&nbsp;35).</li>
+  <li>Sentiment &mdash; and here <code>anger_level</code> earns its place.</li>
+  <li>Policy: refunds over a limit, legal language, a vulnerable caller.</li>
+  <li><strong>Elapsed time.</strong> A voice interaction running past
+  5&ndash;10 minutes without resolution escalates regardless of every other
+  signal.</li>
+  <li>The caller asked. This one is absolute and needs no threshold.</li>
+</ul>
+
+<h3>Hand over a structure, not a paragraph</h3>
+
+<p>The single most actionable finding in the hand-off literature: pass
+<strong>structured context, not free-form notes</strong>. The human wants a card
+with the fields that matter &mdash; account identifier, request type, what has
+been tried, sentiment &mdash; because a free-form summary wastes the first
+thirty seconds of their attention.</p>
+
+<pre><code>call_id       9f2c-...             turns          14
+caller        Maria Kovac          sentiment      frustrated (0.7)
+verified      customer_id C-88213  (lookup, turn 4)
+intent        reschedule_appointment
+collected     date 2026-10-02 (confirmed), party_size - (3 failures)
+tried         narrowed to this week / next week; both no-match
+reason        attempt limit on party_size</code></pre>
+
+<p>Note the shape: it is the slot map plus provenance plus the attempt counters.
+Every field on that card already exists in the state designed in Part&nbsp;II.
+The hand-off card is not a feature to build later; it is a rendering of state
+the system already holds, which is one of the better arguments for holding it
+properly.</p>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>Never make the caller re-authenticate after a transfer. Re-verification
+  after hand-off is the most common complaint about escalation, and the fix is
+  to pass the authentication state forward as part of the card. A
+  <code>Verified</code> slot (Chapter&nbsp;7) is precisely the thing that can be
+  passed with confidence &mdash; which is why the distinction was worth a type.</p>
+</div>
+
+<h2 id="c37"><span class="num">37</span> Language, and staying in it</h2>
+
+<p>The schema asks for <code>language_detected</code> with values
+<code>de|en|ru</code>, which means language is currently decided per turn. For
+a stateless classifier that is the only option. For a call it is the wrong
+default.</p>
+
+<h3>Sticky, with an explicit switch</h3>
+
+<p>The language of a call is a property of the call. Detect it on the first
+substantive turn, record it on the session, and use it for everything afterwards
+&mdash; including everything already asked. A caller who says a proper noun that
+reads as German should not get a German confirmation of an English booking.</p>
+
+<p>Per-turn detection has a specific failure mode: short utterances.
+&ldquo;Ja&rdquo;, &ldquo;OK&rdquo;, &ldquo;Maria Kovac&rdquo; carry almost no
+language signal, and a per-turn detector will flip on them &mdash; usually at
+the confirmation step, which is the worst possible moment.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>CallSession::language</code> in <code>ai_autocalls_rust</code> carries
+  exactly this decision, with the reasoning in the field's comment: recorded on
+  the session as well as on each request <em>&ldquo;so that a caller who
+  switches their language selector mid-call does not end up with a form half in
+  each &mdash; the session's language wins for anything already asked.&rdquo;</em>
+  Keep <code>language_detected</code> in the schema as a signal; do not let it
+  be the decision.</p>
+</div>
+
+<h3>What has to be translated, and what does not</h3>
+
+<table>
+  <tr><th style="width:36%">Layer</th><th>Multilingual?</th></tr>
+  <tr><td>Deterministic fallback sentences (Chapter&nbsp;30)</td><td>Yes &mdash; one table per language</td></tr>
+  <tr><td>Value read-back rendering (Chapter&nbsp;34)</td><td>Yes &mdash; dates and numbers are per-locale</td></tr>
+  <tr><td>Option labels</td><td>Yes &mdash; the label, not the stored value</td></tr>
+  <tr><td>The system prompt</td><td>No &mdash; write it in one language and pin the output language</td></tr>
+  <tr><td>Slot names, function names, log fields</td><td>No &mdash; ever</td></tr>
+</table>
+
+<p>Keeping the prompt in one language matters for the prefix cache
+(Chapter&nbsp;26): three translated system prompts are three separate prefixes
+competing for the same cache. One prompt with an explicit output-language
+instruction is one prefix, and the instruction costs a handful of tokens.</p>

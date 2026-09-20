@@ -1,0 +1,564 @@
+<section class="part-opener first">
+  <h1 id="p1" data-part="Part I">What you are building, <br>and where it sits</h1>
+  <p class="part-blurb">Before any decision about slots, prompts or timeouts
+  makes sense, three things have to be settled: what this service actually is,
+  whose latency it is spending, and which of the two kinds of LLM system it
+  belongs to. All three are commonly got wrong, and each one costs a rewrite.</p>
+  <div class="part-contents">
+    <div><span class="n">1</span> &nbsp; Text in, one sentence out</div>
+    <div><span class="n">2</span> &nbsp; Three architectures, and which one you are in</div>
+    <div><span class="n">3</span> &nbsp; The latency budget you are already spending</div>
+    <div><span class="n">4</span> &nbsp; This is a workflow, not an agent</div>
+    <div><span class="n">5</span> &nbsp; The lineage: state was settled before LLMs</div>
+  </div>
+</section>
+
+<h2 id="c1"><span class="num">1</span> Text in, one sentence out</h2>
+
+<p>Strip away the HTTP, the JSON and the GPU and this service is one function:</p>
+
+<pre><code>turn : (utterance, call_state) -&gt; (sentence, call_state')</code></pre>
+
+<p>Today the second argument and the second return value are missing.
+<code>POST /assistant/handle-request</code> takes <code>request_text</code> and
+an optional <code>language</code>, and returns a decision. Nothing carries from
+one call of the function to the next. That is a deliberate simplification, not
+an oversight, and <code>context.md</code> records it as such: <em>&ldquo;stateless by
+design&rdquo;</em>. Most of Part&nbsp;II is about what it costs to put the missing
+arguments back.</p>
+
+<p>What does not change when state arrives is the shape of the return value.
+Whatever else a turn produces, it produces <strong>one sentence the caller
+hears</strong>. That is the promise the endpoint makes, and it is why
+<code>ActionDecision</code> names exactly one key.</p>
+
+<h3>Three jobs, and only two of them belong to the model</h3>
+
+<p>Every turn does three things:</p>
+
+<dl>
+  <dt>Understand</dt>
+  <dd>Turn a noisy, ungrammatical, possibly mid-sentence utterance into
+  something structured. &ldquo;yeah no the fifth is bad, make it the sixth&rdquo; is a date
+  correction. A model is very good at this and nothing else is.</dd>
+
+  <dt>Decide</dt>
+  <dd>Given what was understood and what the call already knows, work out what
+  happens next: which function to run, whether the step is complete, whether to
+  confirm, whether to hand off. This is a predicate over known values.</dd>
+
+  <dt>Phrase</dt>
+  <dd>Produce the sentence. Natural, in the caller's language, in the right
+  register, without repeating the exact wording used two turns ago. Again, a
+  model is very good at this and a table of static strings is not.</dd>
+</dl>
+
+<p>The middle one is the whole argument of this book. It is the job that looks
+like it belongs to the model &mdash; the model is right there, it has all the
+context, it can obviously answer &ldquo;should we move on?&rdquo; &mdash; and it is the job
+that must not be given to it. Chapter&nbsp;4 makes the case in full; Part&nbsp;II
+turns it into code.</p>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>The model extracts and the model phrases. Code decides. Any turn where a
+  state transition depends on a generated token is a turn that can silently take
+  the wrong branch, and no amount of prompt work fixes it &mdash; it makes it
+  rarer, which is worse, because rare wrong branches are the ones that reach
+  production.</p>
+</div>
+
+<h3>The path a turn takes through this repository</h3>
+
+<pre class="long"><code>POST /assistant/handle-request
+  routes::api::handle_assistant_request          <span class="c">// api.rs</span>
+    |
+    +-- reject empty request_text                <span class="c">// 400, ApiError</span>
+    |
+    +-- AppState.llm : VllmClient                <span class="c">// app.rs, cloned per request</span>
+          VllmClient::classify(utterance)        <span class="c">// vllm.rs</span>
+            |
+            +-- SystemPrompt::current()          <span class="c">// re-read from disk, every turn</span>
+            +-- ChatCompletionRequest {          <span class="c">// temperature 0.0, max_tokens 256</span>
+            |     response_format: json_object   <span class="c">// constrained decoding</span>
+            |   }
+            +-- POST {llm_url}/chat/completions  <span class="c">// reqwest, 120s budget</span>
+            |
+            +-- finish_reason == "length"  -&gt; VllmError::Truncated
+            +-- serde_json::from_str       -&gt; ActionDecision
+                  humanlike_sentence_answer : String   <span class="c">// named</span>
+                  #[serde(flatten)] fields  : Map      <span class="c">// everything else</span>
+    |
+    +-- AssistantResponse                        <span class="c">// answer + flattened fields</span>
+          200 {"answer": "...", "selected_function": "...", ...}</code></pre>
+
+<p>Four things in that path are decisions rather than plumbing, and each gets a
+chapter of its own: the prompt is a file re-read per turn
+(Chapter&nbsp;18), the decision is a pass-through map rather than a struct
+(Chapter&nbsp;16), decoding is constrained to JSON (Chapter&nbsp;22), and the
+failure modes are distinguished by type rather than collapsed into one
+(Chapter&nbsp;25).</p>
+
+<h3>What the pass-through design buys, and what it costs</h3>
+
+<p><code>ActionDecision</code> is an unusual shape and worth understanding before
+anything is built on top of it. It names <code>humanlike_sentence_answer</code>
+and flattens everything else into a <code>serde_json::Map</code>:</p>
+
+<pre><code><span class="k">pub struct</span> ActionDecision {
+    <span class="k">pub</span> humanlike_sentence_answer: String,
+
+    #[serde(flatten)]
+    <span class="k">pub</span> fields: Map&lt;String, Value&gt;,
+}</code></pre>
+
+<p>The benefit is real and it is the reason prompt iteration on this project is
+fast: adding <code>urgency</code> to the schema in the prompt file makes
+<code>urgency</code> appear in the API response and as a badge in the mimic
+client, with no Rust change and no rebuild. <code>context.md</code> records this
+being exercised mid-session &mdash; two keys added, used on the next turn, then
+removed &mdash; which is exactly the loop prompt work is made of.</p>
+
+<p>The cost is that <strong>the compiler has stopped helping</strong> for every
+key except one. If the prompt asks for <code>anger_level</code> and the model
+returns <code>angerLevel</code>, nothing fails; the badge silently disappears and
+any code reading <code>fields["anger_level"]</code> gets <code>None</code>. The
+existing tests cover the round trip and the key ordering, but they cannot cover a
+key that does not exist yet.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p>This trade is correct <em>while the extra keys are observational</em> &mdash;
+  badges, log fields, things a human reads. It stops being correct the moment a
+  key drives behaviour. The first time code branches on
+  <code>fields["is_hanging_up"]</code>, that key has earned a named field and a
+  test, and the pass-through map should hold only what remains decorative.
+  Chapter&nbsp;16 gives the rule for deciding which is which.</p>
+</div>
+
+<h2 id="c2"><span class="num">2</span> Three architectures, and which one you are in</h2>
+
+<p>There are two ways to build a voice agent in 2026, and this service is a
+component of the second one rather than an instance of either.</p>
+
+<h3>Bundled speech-to-speech</h3>
+
+<p>A single model takes audio in and emits audio out: OpenAI's Realtime API,
+Gemini Live. One WebSocket carries the whole loop. Time-to-first-audio lands
+around 300&ndash;500&nbsp;ms on a warm connection, and the model hears the
+caller's actual voice, so hesitation, laughter and accent survive into the
+response instead of being flattened into a transcript.</p>
+
+<p>What you give up is control. Tool calling is less mature, argument validation
+is looser, and the per-stage timings are inside somebody else's box. The
+consistent industry guidance is that speech-to-speech suits agents with one to
+three tools and forgiving argument validation &mdash; search, lookup, simple
+state queries.</p>
+
+<h3>Cascaded</h3>
+
+<p>Three components in a row: speech-to-text, then a language model, then
+text-to-speech, with a turn-detection layer deciding when the caller has stopped
+talking. This dominates production deployments. Each component can be replaced
+without touching the others, every stage emits its own metrics, and structured
+output can be enforced properly because the middle stage is an ordinary LLM
+endpoint.</p>
+
+<p>The price is latency: a well-built cascade lands at 600&ndash;1,200&nbsp;ms
+time-to-first-audio, and three services means three independent failure
+surfaces.</p>
+
+<p>For agents needing five or more tools with strict schema enforcement &mdash;
+booking, payments, healthcare intake, <em>structured form filling</em> &mdash;
+cascaded is the safer default. That description is this project exactly.</p>
+
+<h3>Where this service actually sits</h3>
+
+<p>It is the middle box of a cascade someone else owns. The phone system does
+the listening, the endpointing and the speaking; it hands over text and expects
+a sentence back. <code>ai_autocalls_rust</code>'s README states the arrangement
+plainly: <em>&ldquo;The backend a phone system calls during a live call. The caller's
+words arrive as text.&rdquo;</em></p>
+
+<table>
+  <tr>
+    <th style="width:26%">Concern</th>
+    <th style="width:37%">Owned by the phone system</th>
+    <th>Owned by this service</th>
+  </tr>
+  <tr><td>Transcription quality</td><td>Model choice, language hints, domain vocabulary</td><td>Nothing &mdash; but see Chapter&nbsp;46 for what arrives</td></tr>
+  <tr><td>Turn detection</td><td>VAD thresholds, endpointing, barge-in</td><td>Nothing, and this is the largest latency item you cannot touch</td></tr>
+  <tr><td>Understanding</td><td>&mdash;</td><td>All of it</td></tr>
+  <tr><td>Call state</td><td>Possibly a call id, nothing more</td><td>All of it (Part&nbsp;II)</td></tr>
+  <tr><td>Phrasing</td><td>&mdash;</td><td>All of it</td></tr>
+  <tr><td>Speech synthesis</td><td>Voice, prosody, streaming</td><td>The text it is given, which is more control than it sounds (Chapter&nbsp;34)</td></tr>
+  <tr><td>Retries</td><td>Webhook retry policy, at-least-once delivery</td><td>Being idempotent under it (Chapter&nbsp;28)</td></tr>
+</table>
+
+<p>Two consequences follow, and they pull in opposite directions.</p>
+
+<p>The comfortable one: a whole class of hard problems &mdash; acoustic echo,
+jitter, μ-law, barge-in reconciliation &mdash; is not yours. Part&nbsp;IX covers
+them so that their effects are recognisable, not so that they can be fixed here.</p>
+
+<p>The uncomfortable one: <strong>you are spending a budget you did not set and
+cannot see.</strong> The phone system has already spent several hundred
+milliseconds before the first byte of <code>request_text</code> arrives, and will
+spend more after the response leaves. What remains is the next chapter.</p>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>Design as though the components around you will be replaced, because in a
+  cascade they are. Nothing in this service should depend on which speech
+  recogniser produced the text or which synthesiser will read it &mdash; with one
+  deliberate exception, the normalisation rules in Chapter&nbsp;34, which are
+  written against a capability (SSML) rather than a vendor.</p>
+</div>
+
+<h2 id="c3"><span class="num">3</span> The latency budget you are already spending</h2>
+
+<p>This is the chapter that changes how the rest of the project is read, so it
+comes early and it is short.</p>
+
+<h3>The budget, as the industry states it</h3>
+
+<p>Twilio's engineering guidance for voice agents allocates the round trip like
+this:</p>
+
+<table>
+  <tr><th style="width:44%">Stage</th><th class="num-col">Budget</th><th>What it covers</th></tr>
+  <tr><td>Speech-to-text</td><td class="num-col">350&nbsp;ms</td><td>Mostly endpointing, not acoustic compute</td></tr>
+  <tr><td><strong>Language model</strong></td><td class="num-col"><strong>375&nbsp;ms</strong></td><td>To <em>first token</em>, not to a complete answer</td></tr>
+  <tr><td>Text-to-speech</td><td class="num-col">100&nbsp;ms</td><td>To first audio byte</td></tr>
+  <tr class="total"><td>Median mouth-to-ear</td><td class="num-col">1,115&nbsp;ms</td><td>Transport and buffering account for the remainder</td></tr>
+</table>
+
+<p>The human constraint behind the number: response delays past
+500&ndash;700&nbsp;ms start to read as unnatural, and a caller who thinks the
+line has gone dead starts talking again &mdash; which triggers barge-in, discards
+the answer being synthesised, and costs another full turn.</p>
+
+<h3>The budget, as this project is spending it</h3>
+
+<p><code>context.md</code> records the measurement: <em>&ldquo;Normal turns measure
+0.6&ndash;2.8&nbsp;s.&rdquo;</em> That is wall-clock for
+<code>VllmClient::classify</code> &mdash; request out, complete JSON parsed.</p>
+
+<table>
+  <tr><th style="width:44%"></th><th class="num-col">Budget</th><th class="num-col">Measured here</th><th>Ratio</th></tr>
+  <tr><td>LLM stage, best observed</td><td class="num-col">375&nbsp;ms</td><td class="num-col">600&nbsp;ms</td><td>1.6&times;</td></tr>
+  <tr><td>LLM stage, worst observed</td><td class="num-col">375&nbsp;ms</td><td class="num-col">2,800&nbsp;ms</td><td>7.5&times;</td></tr>
+  <tr class="total"><td>Whole conversational budget</td><td class="num-col">1,115&nbsp;ms</td><td class="num-col">600&ndash;2,800&nbsp;ms</td><td>0.5&ndash;2.5&times;</td></tr>
+</table>
+
+<p>The best case consumes more than half the entire mouth-to-ear budget on its
+own. The worst case exceeds it two and a half times over, before the phone
+system has spent a millisecond on recognising or speaking.</p>
+
+<p>This is not a criticism of the implementation. It is the expected shape: the
+language model is normally the largest single contributor to time-to-first-audio,
+which is precisely why the optimisations that matter are all about overlapping it
+with something else rather than making it faster.</p>
+
+<h3>Why the comparison is not quite fair, and why it still stands</h3>
+
+<p>The 375&nbsp;ms figure is <strong>time to first token</strong>. The
+600&ndash;2,800&nbsp;ms figure is <strong>time to the last token</strong>,
+because this client is not streaming: <code>classify</code> awaits the complete
+response, then parses it. The like-for-like comparison does not exist yet, which
+is itself the finding.</p>
+
+<div class="box measure">
+  <span class="box-label">Measure this</span>
+  <p><strong>Time to first token</strong>, separately from total turn time.
+  Today neither is recorded as a metric; only the total appears incidentally in
+  a log line. Add both to the span described in Chapter&nbsp;40 and watch p95,
+  not the mean &mdash; benchmark disagreements between voice vendors are almost
+  always percentile differences rather than model differences.</p>
+  <p><em>Elsewhere:</em> ~820&nbsp;ms p50 time-to-first-token has been measured
+  for a frontier hosted model from cloud regions. A locally served 7B on a warm
+  GPU should beat that comfortably; if it does not, the problem is queueing or
+  prefix-cache misses rather than the model.</p>
+</div>
+
+<h3>What actually recovers the budget</h3>
+
+<p>Three things, none of which is a faster GPU:</p>
+
+<ol>
+  <li><strong>Stream, and chunk at sentence boundaries.</strong> The single
+  largest recovery available in a cascade comes from feeding tokens into
+  synthesis as they arrive rather than after the answer completes. Chapter&nbsp;27
+  covers the mechanics, including a change specific to this schema that costs
+  nothing.</li>
+  <li><strong>Stop generating tokens nobody hears.</strong> Every key in the
+  output schema is generated serially. The current schema is eight keys and
+  about 100 tokens; only one of them reaches the caller's ear.</li>
+  <li><strong>Keep the prefix cached.</strong> A stable prompt prefix cuts
+  time-to-first-token substantially &mdash; 60&ndash;80% reductions are reported
+  for chat workloads with long shared system prompts. Chapter&nbsp;26 covers what
+  breaks it.</li>
+</ol>
+
+<h3>What <code>timeout_seconds = 120</code> actually is</h3>
+
+<p>Read against a 375&nbsp;ms budget, the configured timeout is roughly 320 times
+the target. That is not a contradiction &mdash; it is two different numbers doing
+two different jobs, and the project currently has only one of them.</p>
+
+<p><code>settings.toml</code> is explicit about what the 120 is for:
+<em>&ldquo;This is not sized for that, it is sized for the bad day.&rdquo;</em> It exists so
+that a cold or contended GPU produces a slow answer instead of a 504. That is
+correct. What is missing is the other number: the latency at which the answer has
+stopped being useful because the caller has already started talking again.</p>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>Keep three latency numbers, not one. A <strong>target</strong> (what a good
+  turn costs &mdash; the thing to optimise), an <strong>alert threshold</strong>
+  (p95 crossing a line that predicts callers talking over the agent), and a
+  <strong>timeout</strong> (the absurd value, where waiting longer cannot help
+  anyone). Today this project has only the third, and it is easy to mistake it
+  for the first.</p>
+</div>
+
+<div class="box trap">
+  <span class="box-label">Trap</span>
+  <p>A generous timeout hides a latency regression completely. Nothing fails, no
+  error is logged, no alert fires &mdash; and callers start interrupting the
+  agent, which surfaces as a rise in barge-in and no-match events on the phone
+  system's dashboard, in a different system, owned by a different team. The 502
+  in <code>context.md</code> was visible only because the timeout was <em>too
+  tight</em>. Raising it to 120&nbsp;s fixed the symptom and removed the alarm.</p>
+</div>
+
+<h2 id="c4"><span class="num">4</span> This is a workflow, not an agent</h2>
+
+<p>The distinction is Anthropic's and it is more load-bearing than it sounds.
+<strong>Workflows</strong> orchestrate models and tools through predefined code
+paths. <strong>Agents</strong> let the model direct its own process and tool
+usage. The guidance for choosing is about predictability: agents suit open-ended
+problems where the required number of steps cannot be predicted and a fixed path
+cannot be hardcoded.</p>
+
+<p>A booking form has four steps. They are known at design time, they are in a
+database table, and their order is a business decision rather than a modelling
+one. This is a workflow.</p>
+
+<h3>Which workflow, precisely</h3>
+
+<p>Two of the five named patterns, composed:</p>
+
+<dl>
+  <dt>Routing</dt>
+  <dd>Classify the input, dispatch to a specialised handler. This is exactly what
+  <code>selected_function</code> does today. The pattern's stated benefit is
+  separation of concerns &mdash; optimising the prompt for cancellations cannot
+  degrade invoice handling, because they are different handlers.</dd>
+
+  <dt>Prompt chaining</dt>
+  <dd>Decompose into sequential steps where each call handles one thing.
+  This is what multi-step form filling becomes: each step is a small, focused
+  call with a small, focused schema, rather than one prompt trying to hold the
+  whole booking in its head.</dd>
+</dl>
+
+<p>The guidance that matters most here is about restraint: start with simple
+prompts, optimise with evaluation, and add agentic machinery only when simpler
+solutions demonstrably fall short. Most successful production systems are
+deterministic code with LLM decision points placed deliberately &mdash; not
+autonomous loops.</p>
+
+<h3>Own the control flow</h3>
+
+<p>The <em>12-Factor Agents</em> formulation is blunt and worth keeping:
+<strong>the model may choose the next action, but the application owns the loop,
+the stop conditions, the retries, the approval gates and the budget
+ceilings.</strong> Two neighbouring factors matter as much: unify execution state
+with business state (factor&nbsp;5), and make the agent a stateless reducer
+(factor&nbsp;12) &mdash; a function from state and input to new state, with
+nothing hidden in the model's head between turns.</p>
+
+<p>That last one describes the target design for this service almost exactly, and
+it is worth noticing that the current stateless endpoint is <em>already</em> a
+degenerate case of it. Adding state does not mean abandoning the shape; it means
+passing the state in and getting it back out, explicitly, on every turn.</p>
+
+<h3>The division of labour, concretely</h3>
+
+<table>
+  <tr><th style="width:50%">Give to the model</th><th>Keep in code</th></tr>
+  <tr>
+    <td>Reading a mangled transcript as a date</td>
+    <td>Whether that date is in the future and inside business hours</td>
+  </tr>
+  <tr>
+    <td>Noticing the caller corrected themselves</td>
+    <td>Which slot the correction applies to, and clearing its confirmation</td>
+  </tr>
+  <tr>
+    <td>Detecting the language</td>
+    <td>Which language the rest of the call is conducted in</td>
+  </tr>
+  <tr>
+    <td>Judging that the caller sounds angry</td>
+    <td>The threshold at which anger triggers a hand-off, and the counter</td>
+  </tr>
+  <tr>
+    <td>Phrasing the question naturally, differently each retry</td>
+    <td>Which question is asked, and after how many failures to stop asking</td>
+  </tr>
+  <tr>
+    <td>Summarising the call for a human agent</td>
+    <td>The structured fields handed over alongside that summary</td>
+  </tr>
+</table>
+
+<div class="box trap">
+  <span class="box-label">Trap</span>
+  <p>The tempting prompt line is <code>"is_step_complete": bool</code>. It works
+  in testing, because in testing the caller answers the question that was asked.
+  It fails when the caller says &ldquo;actually, hold on&rdquo; &mdash; a model that has been
+  asked for a boolean will produce one, and a <code>true</code> there is a
+  booking with a missing field that nobody notices until delivery. The predicate
+  in Chapter&nbsp;8 has the same job and cannot be talked into the wrong answer.</p>
+</div>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>ai_autocalls_rust</code> settled this and left the artefact behind:
+  <code>events/mod.rs</code> documents that a name ending in
+  <code>Request</code> carries <em>the caller's own words, as plain data</em>
+  &mdash; not a decision, not an instruction. <code>CallRequest</code>,
+  <code>FormConfirmationRequest</code>, <code>FormStepDataRequest</code> all hold
+  a string and nothing else. Whether those words are an answer, a question or
+  noise is decided by subscribers. That naming convention is the &ldquo;model extracts,
+  code decides&rdquo; rule enforced by the type system.</p>
+</div>
+
+<h2 id="c5"><span class="num">5</span> The lineage: state was settled before LLMs</h2>
+
+<p>The design being reached for in <code>context.md</code> &mdash; per-call
+session, conversation memory, slot placeholders, per-step completion conditions
+&mdash; is not novel, and that is the good news. It is task-oriented dialogue
+with slot filling, and it has a twenty-five-year paper trail.</p>
+
+<h3>VoiceXML, 1999</h3>
+
+<p>The W3C recommendation defines a <em>form</em> containing <em>field item
+variables</em> &mdash; slots &mdash; and a <strong>Form Interpretation
+Algorithm</strong> that visits each item until it is filled. Attach a grammar to
+each field and you get directed dialogue; attach one to the form and you get
+mixed initiative, where the caller may answer several fields at once and in any
+order, without waiting to be asked.</p>
+
+<p>It also shipped the parts people rediscover painfully: <code>noinput</code>
+and <code>nomatch</code> event counters, escalating reprompts, and
+<code>&lt;filled&gt;</code> blocks that run when a field gets a value.</p>
+
+<h3>What came after</h3>
+
+<table class="long">
+  <tr>
+    <th style="width:17%">Concept</th>
+    <th style="width:17%">VoiceXML (1999)</th>
+    <th style="width:17%">Rasa</th>
+    <th style="width:17%">Dialogflow CX</th>
+    <th>This repository</th>
+  </tr>
+  <tr>
+    <td>A thing to collect</td><td>field item variable</td><td>slot</td>
+    <td>parameter</td><td>slot / form field</td>
+  </tr>
+  <tr>
+    <td>A group of them</td><td>form</td><td>form</td><td>page</td>
+    <td>form (<code>forms/definition.rs</code>)</td>
+  </tr>
+  <tr>
+    <td>Where the call is</td><td>FIA position</td><td>active loop</td>
+    <td>current page</td><td><code>forms/flow.rs</code></td>
+  </tr>
+  <tr>
+    <td>Speech &rarr; value</td><td>SRGS grammar</td><td>slot mapping</td>
+    <td>entity type</td><td><code>forms/parsers/</code></td>
+  </tr>
+  <tr>
+    <td>Is the value legal</td><td><code>&lt;filled&gt;</code> + script</td>
+    <td><code>validate_&lt;slot&gt;</code></td><td>webhook</td>
+    <td>parser + validator</td>
+  </tr>
+  <tr>
+    <td>Ask again</td><td>reprompt, counted</td><td>re-request slot</td>
+    <td>reprompt handler</td>
+    <td><code>subscribers/form_retry.rs</code></td>
+  </tr>
+  <tr>
+    <td>Give up</td><td><code>nomatch</code> threshold</td><td>action</td>
+    <td>no-match event, 3 strikes</td>
+    <td><code>subscribers/hand_off.rs</code></td>
+  </tr>
+</table>
+
+<p>The columns are the same design four times. Dialogflow CX's documented
+behaviour is VoiceXML's FIA restated: collect required parameters in the order
+defined on the page, prompt with the initial fulfilment, repeat unless a reprompt
+handler says otherwise, escalate to a human on the third failure. Rasa adds
+domain-level validation for universal constraints and
+<code>validate_&lt;slot&gt;</code> for business ones &mdash; the same two-tier
+split that any implementation converges on.</p>
+
+<h3>What large language models actually changed</h3>
+
+<p>Two of the three jobs from Chapter&nbsp;1, and neither of them is state.</p>
+
+<p><strong>Understanding</strong> was a hand-written SRGS grammar, then an intent
+classifier trained on example phrases, and is now a model that handles utterances
+nobody anticipated. This is a genuine step change and it is why the older systems
+felt brittle.</p>
+
+<p><strong>Phrasing</strong> was a static string per prompt, optionally with
+slots interpolated. Now it is generated, in the caller's language, varied between
+retries. Also a genuine step change, and the reason
+<code>humanlike_sentence_answer</code> is the one key this service cannot do
+without.</p>
+
+<p><strong>State</strong> did not change. A slot is still a name, a type, a
+value, a validity condition and a confirmation status. The step is still complete
+when its slots are filled and valid. The algorithm that walks the form is still
+the one written down in 1999.</p>
+
+<p class="pull">The literature is unambiguous about why this matters. On
+SpokenWOZ &mdash; the benchmark built from spoken, not written, task-oriented
+dialogue &mdash; the best dialogue state tracker reaches 25.65% joint goal
+accuracy, and the best end-to-end model completes the user's request in 52.1% of
+dialogues.</p>
+
+<p>Joint goal accuracy is the fraction of turns where <em>every</em> slot is
+correct. A quarter, on the benchmark specifically designed to look like real
+phone calls. That number is the argument against letting a model re-derive the
+booking from the transcript on each turn, and it is why Chapter&nbsp;6 insists on
+the separation it does.</p>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>If a vocabulary is being invented for &ldquo;a thing the call needs to collect&rdquo;,
+  stop and use the existing one: <em>slot</em>, <em>form</em>, <em>step</em>,
+  <em>validator</em>, <em>confirmation</em>, <em>no-match</em>. Not because the
+  words are better, but because every question that comes next &mdash; what
+  happens when they answer two at once, what happens on the third failure, what
+  happens when they correct an earlier answer &mdash; has a documented answer
+  filed under those words.</p>
+</div>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>ai_autocalls_rust</code> is the fifth column of that table, already
+  built: <code>forms/definition.rs</code> (what a form is),
+  <code>forms/builder.rs</code> (how one is assembled),
+  <code>forms/flow.rs</code> (where the call is inside it),
+  <code>forms/parsers/</code> (speech to typed values, one file per type),
+  <code>forms/repository.rs</code> (forms defined in Postgres, not in code).
+  Forms are added there without writing Rust. Part&nbsp;II reads that design
+  closely; it is the shortest path from where <code>ai_assistant</code> is to
+  where it is going.</p>
+</div>

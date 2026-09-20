@@ -1,0 +1,548 @@
+<section class="part-opener">
+  <h1 id="p2" data-part="Part II">The dialogue layer:<br>state, slots, transitions</h1>
+  <p class="part-blurb">This is the part <code>ai_assistant</code> does not have
+  yet, and the part that decides whether the rest of the project stays simple.
+  Get the separation between evidence and state right at the beginning and
+  everything downstream &mdash; prompts, validation, confirmation, hand-off
+  &mdash; has somewhere obvious to live. Get it wrong and every feature after it
+  is a special case.</p>
+  <div class="part-contents">
+    <div><span class="n">6</span> &nbsp; Transcript is evidence, the slot map is state</div>
+    <div><span class="n">7</span> &nbsp; What a slot is made of</div>
+    <div><span class="n">8</span> &nbsp; The predicate that moves the call</div>
+    <div><span class="n">9</span> &nbsp; Mixed initiative: over-answering, correcting, digressing</div>
+    <div><span class="n">10</span> &nbsp; Where call state lives</div>
+    <div><span class="n">11</span> &nbsp; Shaping it in Rust</div>
+  </div>
+</section>
+
+<h2 id="c6"><span class="num">6</span> Transcript is evidence, the slot map is state</h2>
+
+<p>There are two candidate designs for remembering a call, and the difference
+between them is the most consequential decision in this Part.</p>
+
+<p><strong>Design A.</strong> Keep the conversation. Every turn, send the whole
+transcript to the model and ask it what the booking currently is. The model has
+all the information; it should be able to tell you.</p>
+
+<p><strong>Design B.</strong> Keep a map of slot names to understood values.
+Every turn, send the model only the current utterance plus a small, rendered
+summary of what is already known, and ask it for one thing: what this utterance
+contributes. Code merges that contribution into the map.</p>
+
+<p>Design A is smaller, obvious, and wrong. The reason is measurable.</p>
+
+<h3>The number that settles it</h3>
+
+<p>Dialogue state tracking &mdash; deriving the current slot values from a
+conversation &mdash; is a benchmarked task with two decades of work behind it.
+The metric is <strong>joint goal accuracy</strong>: the fraction of turns at
+which <em>every</em> slot is simultaneously correct. Not most slots. All of
+them, because a booking with the right date and the wrong reference number is
+not partially correct, it is wrong.</p>
+
+<table>
+  <tr><th style="width:34%">Benchmark</th><th class="num-col">Best joint goal accuracy</th><th>What it is made of</th></tr>
+  <tr><td>MultiWOZ 2.2</td><td class="num-col">~57%</td><td>Typed dialogues, clean text, written by people who knew they were annotating</td></tr>
+  <tr><td><strong>SpokenWOZ</strong></td><td class="num-col"><strong>25.65%</strong></td><td><strong>Spoken</strong> task-oriented dialogue: disfluencies, corrections, recognition errors</td></tr>
+</table>
+
+<p>SpokenWOZ is the one that resembles a phone call, and on it the best tracker
+gets the whole state right about a quarter of the time. The best end-to-end
+system completes the caller's request in 52.1% of dialogues.</p>
+
+<p>Those numbers are for systems <em>designed</em> to do state tracking. A
+general-purpose model asked to re-read a transcript each turn is not going to do
+better, and it has an additional failure mode the benchmarks do not measure:
+hallucination on slots the conversation never mentioned. That is a documented
+problem with LLM-driven state tracking &mdash; the model produces a plausible
+value for a slot nobody discussed.</p>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>Extract once, store forever. A value enters the slot map on the turn it was
+  first understood, and after that it changes only through an explicit
+  correction. It is never re-derived, and no later turn can quietly alter it by
+  re-reading the transcript.</p>
+</div>
+
+<h3>So what is the transcript for</h3>
+
+<p>Not nothing. Keep a rolling window of the last four to six turns, and use it
+for exactly one job: <strong>reference resolution</strong>. &ldquo;Make it an
+hour later&rdquo;, &ldquo;no, the other one&rdquo;, &ldquo;same as last
+time&rdquo; cannot be understood from the
+slot map, because the thing being referred to is in the words, not in the
+values.</p>
+
+<p>The distinction to hold onto:</p>
+
+<table>
+  <tr><th style="width:24%"></th><th style="width:38%">Transcript window</th><th>Slot map</th></tr>
+  <tr><td>Is</td><td>Evidence</td><td>State</td></tr>
+  <tr><td>Answers</td><td>&ldquo;what did they mean by <em>that</em>?&rdquo;</td><td>&ldquo;what do we have?&rdquo;</td></tr>
+  <tr><td>Size</td><td>Bounded: 4&ndash;6 turns</td><td>Bounded: the form's fields</td></tr>
+  <tr><td>Written by</td><td>Append-only, verbatim</td><td>Code, from a parsed value</td></tr>
+  <tr><td>If lost</td><td>A pronoun becomes ambiguous</td><td>The booking is gone</td></tr>
+  <tr><td>Authority</td><td>None</td><td>Total</td></tr>
+</table>
+
+<p>The last row is the one that matters. If the window and the map disagree, the
+map is right. The window exists to help understand the next utterance, never to
+correct the record.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>ai_autocalls_rust</code> keeps the map (<code>flow.answers</code>,
+  <code>session.memory</code>) and does not keep a transcript at all &mdash; its
+  understanding stage is an embedding matcher plus a small local model working
+  one utterance at a time, so it never needed one. Adding the window to
+  <code>ai_assistant</code> is a real addition, not a port, and it should be
+  added <em>as a window</em>: a fixed-length ring, rendered into the prompt,
+  never a growing list. A transcript that grows without bound is a context
+  window that eventually overflows in the middle of a caller's sentence.</p>
+</div>
+
+<h2 id="c7"><span class="num">7</span> What a slot is made of</h2>
+
+<p>A slot is not a <code>String</code> in a map. It is at minimum six things,
+and leaving any of them out shows up later as a category of bug rather than a
+single one.</p>
+
+<pre><code><span class="k">struct</span> Slot {
+    name:       String,        <span class="c">// "appointment_date"</span>
+    value:      Option&lt;SlotValue&gt;,   <span class="c">// parsed, normalised, typed</span>
+    raw:        Option&lt;String&gt;,      <span class="c">// what they actually said</span>
+    provenance: Provenance,    <span class="c">// Verified | Collected | Inferred</span>
+    confirmed:  bool,          <span class="c">// read back and agreed</span>
+    attempts:   u32,           <span class="c">// consecutive failures on this slot</span>
+}</code></pre>
+
+<h3>Typed values, not strings</h3>
+
+<p>Speech recognition hands over a string, always. &ldquo;The fifth of March
+nineteen eighty-seven&rdquo;, &ldquo;yes that's right&rdquo; and &ldquo;I five D
+F three&rdquo; are all just text. A booking is not made of text; it is made of a
+date, a boolean and a reference code, and those three behave differently when
+stored, compared against a database row, and read back aloud.</p>
+
+<p>So every answer passes through a parser that either produces a typed value or
+refuses. A typed slot value is a <em>promise that this has already been
+understood</em>; anything still shaped like raw speech never gets that far.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>forms/value.rs</code> is this type, and its doc comment makes the
+  argument better than a general rule could: read-back is a method on the
+  <em>value</em>, not on the form, because a code must be spelled out
+  (&ldquo;I, 5, D, F, 3&rdquo; &mdash; a synthesiser reads <code>I5DF3</code>
+  aloud as something like &ldquo;eye-five-diff-three&rdquo;, which no caller can
+  check against the letters on their own letter), a date must be said the way
+  that language says dates, and a choice must be read back with its human label
+  rather than the database value. Putting it on the value means a new answer
+  kind <em>cannot forget</em>: the compiler lists every match arm.
+  Chapter&nbsp;34 is the general version of this.</p>
+</div>
+
+<h3>Keep the raw string too</h3>
+
+<p>The parsed value is what the system uses. The raw string is what the caller
+said, and it is worth keeping for the length of the call for three reasons: a
+correction often refers to the wording rather than the value, a mis-parse is
+only diagnosable if the input survives, and reading back the raw string is
+sometimes the fastest way to resolve a disagreement.</p>
+
+<p>It is also personal data, which is Part&nbsp;VIII's problem and needs a
+retention decision rather than an accident.</p>
+
+<h3>Provenance: the field that prevents an incident</h3>
+
+<p>This is the one most implementations leave out, and the one worth adding on
+day one.</p>
+
+<dl>
+  <dt>Verified</dt>
+  <dd>Written only from an authoritative source &mdash; a database row, a
+  lookup, an API response. A customer id, an account balance, a confirmed
+  booking reference. <strong>Never written from a model's output, under any
+  circumstances.</strong></dd>
+
+  <dt>Collected</dt>
+  <dd>Came from the caller, through parse &rarr; normalise &rarr; (usually)
+  confirm. A preferred date, a name, a choice from a list. Trusted enough to act
+  on once confirmed, and never treated as authoritative about the outside
+  world.</dd>
+
+  <dt>Inferred</dt>
+  <dd>Derived by code from other slots &mdash; a duration computed from a start
+  and an end, a default filled in from business rules. Recomputed when its
+  inputs change, never edited directly.</dd>
+</dl>
+
+<div class="box trap">
+  <span class="box-label">Trap</span>
+  <p>A model asked to produce a customer id <em>will produce one</em>. It will
+  be the right length, the right shape, and entirely invented. If that value
+  reaches a slot marked as if it came from a lookup, the system then reads it
+  back to the caller with confidence, attaches it to a submission, and possibly
+  loads somebody else's record with it. That is not a UX bug; under GDPR it is a
+  personal-data breach involving the wrong data subject. The type system should
+  make it impossible: a <code>Verified</code> slot has a constructor that only
+  the lookup code can reach.</p>
+</div>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>ai_autocalls_rust</code> encodes half of this already:
+  <code>CallSession::identified_as</code> carries the comment <em>&ldquo;never
+  set by anything except a successful lookup&rdquo;</em>. That is provenance
+  expressed as a convention. Promoting it from a comment to a type is a small
+  change with a large blast radius, and it is the right first thing to build
+  when <code>ai_assistant</code> grows slots of its own.</p>
+</div>
+
+<h3>Confirmed, and attempts</h3>
+
+<p><code>confirmed</code> is a property of the slot, not of the turn, because a
+correction three questions later has to clear it. <code>attempts</code> counts
+consecutive failures on the current question and drives the escalation ladder in
+Chapter&nbsp;35.</p>
+
+<p>One subtlety worth stealing:
+<code>ai_autocalls_rust</code>'s <code>attempts</code> field is explicitly
+<em>not</em> incremented when the caller asks a reasonable question instead of
+answering &mdash; <em>&ldquo;they did not fail, they asked something&rdquo;</em>.
+Counting a mid-form question as a recognition failure is how a system ends up
+transferring a perfectly cooperative caller to a human for the crime of being
+curious.</p>
+
+<h2 id="c8"><span class="num">8</span> The predicate that moves the call</h2>
+
+<p>A step is complete when its slots satisfy a boolean expression over values
+the system already holds:</p>
+
+<pre><code>fn step_complete(step: &amp;Step, slots: &amp;SlotMap) -&gt; bool {
+    step.required.iter().all(|name| {
+        <span class="k">match</span> slots.get(name) {
+            Some(slot) =&gt; slot.value.is_some()
+                       &amp;&amp; slot.valid()
+                       &amp;&amp; (!step.needs_confirmation(name) || slot.confirmed),
+            None =&gt; false,
+        }
+    })
+}</code></pre>
+
+<p>There is no model call in that function and there must never be one. Every
+term is a fact the system wrote itself.</p>
+
+<h3>Why this is worth being dogmatic about</h3>
+
+<p>The alternative &mdash; asking the model &ldquo;is this step
+complete?&rdquo; &mdash; is attractive because it handles cases the predicate
+does not: the caller who says &ldquo;that's everything you need, right?&rdquo;,
+the one who answers three questions in one breath. It works in testing. It fails
+in two specific ways that testing does not catch.</p>
+
+<p>First, <strong>a model asked for a boolean always returns one.</strong> There
+is no &ldquo;I could not tell&rdquo; token. When the caller says something that
+does not answer the question &mdash; &ldquo;hold on, my dog is barking&rdquo;
+&mdash; the model still emits <code>true</code> or <code>false</code>, and a
+<code>true</code> there is a submission with a missing field that nothing
+downstream checks.</p>
+
+<p>Second, <strong>it is not reproducible.</strong> When a caller reports that
+the booking lost their reference number, a predicate can be evaluated against
+the stored slots and will give the same answer it gave during the call. A model
+call cannot be replayed with the same guarantee, which means the bug cannot be
+confirmed, only guessed at.</p>
+
+<h3>Two tiers of validation</h3>
+
+<p>Rasa's split is the one worth copying, because implementations converge on it
+anyway. Domain-level validation lives with the slot definition and enforces
+universal, technical constraints &mdash; type, format, range &mdash; whenever the
+slot is set. Business validation lives with the form and enforces rules that
+depend on context.</p>
+
+<table>
+  <tr><th style="width:24%">Tier</th><th style="width:32%">Example</th><th>Where it lives</th></tr>
+  <tr><td>Domain / technical</td><td>&ldquo;a date is a date&rdquo;; a reference code matches the format</td><td>The parser and the slot type &mdash; always runs, every form</td></tr>
+  <tr><td>Business</td><td>&ldquo;that date is a Sunday and we are closed&rdquo;; &ldquo;that slot is taken&rdquo;</td><td>The form's validator &mdash; may need a database call</td></tr>
+</table>
+
+<p>The distinction is not academic: a domain failure means &ldquo;I did not
+understand&rdquo; and should be re-prompted; a business failure means &ldquo;I
+understood you perfectly and the answer is no&rdquo; and needs a completely
+different sentence. Collapsing them produces the maddening interaction where a
+system responds to a perfectly clear request by asking the caller to repeat
+themselves.</p>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>A step transition is a pure function of stored state. If evaluating it
+  requires a model call, a network call or the current time, the state is
+  incomplete &mdash; add the missing slot rather than reaching outside the
+  function.</p>
+</div>
+
+<h2 id="c9"><span class="num">9</span> Mixed initiative: over-answering, correcting, digressing</h2>
+
+<p>Directed dialogue &mdash; one question, one answer, in order &mdash; is easy
+to build and unpleasant to use. Real callers do three things it does not
+handle, and all three were named in the VoiceXML specification before any of the
+current tooling existed.</p>
+
+<h3>Over-answering</h3>
+
+<p>You asked for a date. They said &ldquo;Tuesday at three, and it's for two
+people&rdquo;. Three slots arrived; one was requested.</p>
+
+<p>The mechanism is straightforward once the slot map exists: the model returns
+a map of contributions rather than a single value, and code merges all of them,
+then re-evaluates which question to ask next. What matters is that <em>the
+extraction schema for a step includes every slot in the form, not just the
+current one</em> &mdash; otherwise the extra values are discarded silently and
+the caller is asked again for something they already said, which is the single
+most irritating thing a phone system does.</p>
+
+<p>Cost: the schema is larger, so more tokens are generated per turn
+(Chapter&nbsp;21). Worth it.</p>
+
+<h3>Correcting</h3>
+
+<p>&ldquo;Actually, make it Wednesday.&rdquo; &ldquo;No, I said <em>fifteen</em>
+.&rdquo; A correction is a write to a slot that already has a value, and it has
+three consequences that must all happen together:</p>
+
+<ol class="tight">
+  <li>The value is replaced.</li>
+  <li><code>confirmed</code> is cleared &mdash; the old read-back agreed to a
+  value that no longer exists.</li>
+  <li>Any <code>Inferred</code> slot computed from it is recomputed, and any
+  <code>Verified</code> slot obtained using it (an availability check, a lookup)
+  is invalidated.</li>
+</ol>
+
+<p>Point three is the one that gets missed. If &ldquo;Tuesday&rdquo; was checked
+against a calendar and &ldquo;Wednesday&rdquo; was not, the system now holds an
+availability confirmation for a date nobody asked for.</p>
+
+<div class="box trap">
+  <span class="box-label">Trap</span>
+  <p>Corrections arrive most often <em>during the final read-back</em>, which is
+  exactly where the code is least prepared for them, because the review stage is
+  usually written as a yes/no. &ldquo;No &mdash; the date's wrong&rdquo; is not a
+  no; it is a correction to one field plus an implicit yes to the rest. A review
+  stage that can only accept or restart will make callers re-answer four correct
+  questions to fix one wrong one.</p>
+</div>
+
+<h3>Digressing</h3>
+
+<p>Mid-form, the caller asks something unrelated: &ldquo;wait, how much does
+this cost?&rdquo; The requirement is to answer it and then return to exactly
+where the form was, without losing the place and without counting the digression
+as a failure.</p>
+
+<p>This needs one design decision: <strong>who looks at the utterance
+first?</strong> If the answer parser looks first, a question that happens to
+parse as free text gets swallowed as an answer. If the question classifier looks
+first, a legitimate answer that resembles a question gets diverted.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>ai_autocalls_rust</code> resolves this per field kind, and the
+  comment on <code>flow.rs::interpretation_for</code> insists the choice was
+  <em>&ldquo;measured, not stylistic&rdquo;</em>: everything parses as free
+  text, so a <code>text</code> field must let the question subscriber look
+  first, and every other kind must not. A typed field is its own filter &mdash;
+  &ldquo;how much does this cost?&rdquo; does not parse as a date &mdash; so the
+  parser can safely go first and the ambiguity never arises.</p>
+  <p>That is a rule worth generalising: <strong>the more constrained the
+  expected answer, the earlier the parser may look.</strong></p>
+</div>
+
+<h3>The other half: repeating</h3>
+
+<p>&ldquo;Sorry, what?&rdquo; deserves a mention because it is trivial to
+implement and disproportionately valuable. Keep the last sentence said,
+verbatim, and repeat it unchanged. Rephrasing is actively worse: a caller who
+did not catch a question wants the same question again, and different wording
+makes them think they misheard something else.
+<code>CallSession::last_prompt</code> exists for exactly this.</p>
+
+<h2 id="c10"><span class="num">10</span> Where call state lives</h2>
+
+<p>Three questions: what is the key, what store, and when does it disappear.</p>
+
+<h3>The key comes from the phone system</h3>
+
+<p>The caller's side owns the call. It already has an identifier for it, it
+sends that identifier on every request, and inventing a second one creates a
+correlation problem for no benefit &mdash; particularly when a caller's data
+has to be found again later (Chapter&nbsp;44).</p>
+
+<p>One consequence worth designing in deliberately: <strong>a request with no
+call id behaves exactly as the stateless endpoint does today</strong> &mdash;
+one question, one answer, nothing remembered. That keeps every existing test and
+any integration that does not send one working unchanged, and it means
+statefulness is opt-in rather than a breaking change.</p>
+
+<h3>Hot in Redis, cold in Postgres</h3>
+
+<p>The production pattern separates state by temperature, and the reasoning is
+about write volume rather than fashion:</p>
+
+<table>
+  <tr><th style="width:20%"></th><th style="width:40%">Redis &mdash; hot</th><th>Postgres &mdash; cold</th></tr>
+  <tr><td>Holds</td><td>The live call session: slots, stage, attempts, turn window, last prompt</td><td>The finished submission, and anything with a legal or business life after the call</td></tr>
+  <tr><td>Written</td><td>Every turn</td><td>Once, at completion</td></tr>
+  <tr><td>Read</td><td>Every turn</td><td>Rarely, and by other systems</td></tr>
+  <tr><td>Lifetime</td><td>TTL, minutes to hours</td><td>A retention policy (Chapter&nbsp;44)</td></tr>
+  <tr><td>If lost</td><td>The call in progress is confused &mdash; bad</td><td>The booking never happened &mdash; unacceptable</td></tr>
+</table>
+
+<p>A call session is worthless half an hour after the call ends and is written
+on every single turn. Putting it in Postgres means a durable write per turn for
+data nobody will ever read again. Redis expires it without a cleanup job and
+costs a fraction of a millisecond.</p>
+
+<h3>One key, one round trip</h3>
+
+<p>Store the session as a single serialised value under one key rather than as a
+hash with a field per slot. The whole session loads in one operation, the field
+count does not grow as the conversation goes on, and there is no window in which
+half the slots have been updated.</p>
+
+<p>The rolling turn window belongs inside that same value, as a fixed-length
+ring. If it is a separate list it needs its own trimming, its own TTL, and its
+own failure mode where the window survives a session that did not.</p>
+
+<div class="box measure">
+  <span class="box-label">Measure this</span>
+  <p><strong>The session TTL</strong>, against how long calls actually last.
+  <code>cache_settings.session_ttl_days = 1</code> in
+  <code>settings.toml</code> today &mdash; correct for a cookie session,
+  enormous for a call that lasts four minutes. A day of TTL on call sessions is
+  a day of personal data sitting in Redis after every call (Chapter&nbsp;44).
+  Measure the 99th-percentile call duration and set the TTL to a small multiple
+  of it; an hour is generous.</p>
+</div>
+
+<div class="box rule">
+  <span class="box-label">Rule</span>
+  <p>Write the thing that must survive to durable storage <em>before</em> telling
+  the caller it is done, and never make the caller wait on a third party. Save
+  the submission inside the request; send it onward in the background. A booking
+  whose delivery permanently fails is still a booking &mdash; the row stays,
+  marked failed, with the attempt count and the last error. Chapter&nbsp;31
+  covers the ordering in full.</p>
+</div>
+
+<h2 id="c11"><span class="num">11</span> Shaping it in Rust</h2>
+
+<p>Everything above is language-neutral. This chapter is about the shape the
+code takes, and it draws entirely on a design that already exists one directory
+across.</p>
+
+<h3>The stage is an enum, and the enum is the documentation</h3>
+
+<pre><code><span class="k">pub enum</span> FormStage {
+    ConfirmingStart,                <span class="c">// "you'd like to book - is that right?"</span>
+    ChoosingEntryMode,              <span class="c">// answer the questions, or be looked up</span>
+    Collecting { index: usize },    <span class="c">// waiting for field N</span>
+    ConfirmingField { index: usize },<span class="c">// waiting for a yes/no on field N</span>
+    ReviewingSummary,               <span class="c">// waiting for a yes/no on all of it</span>
+}</code></pre>
+
+<p>Five variants, and the whole shape of a form-filling call is visible in them.
+Two details are worth noticing.</p>
+
+<p><code>ConfirmingStart</code> exists because discovering at question four that
+the caller wanted something else wastes far more of their time than one exchange
+up front. <code>ChoosingEntryMode</code> exists because &ldquo;give me something
+that identifies you and I will look the rest up&rdquo; is a fundamentally
+different route through the same form, and modelling it as a route rather than
+as a branch inside every step keeps the steps simple.</p>
+
+<h3>Why not typestate</h3>
+
+<p>Rust's typestate pattern &mdash; one type per stage, transitions consuming
+<code>self</code> &mdash; makes illegal transitions unrepresentable, which is
+exactly what a state machine wants. It is the wrong tool here for one reason:
+<strong>this state is serialised to Redis and back on every turn.</strong>
+Typestate encodes the state in the type, and a value arriving from Redis has no
+type until it has been deserialised, at which point a runtime match is
+unavoidable anyway. The enum is honest about that; typestate would add ceremony
+around the same match.</p>
+
+<p>Keep typestate for things that live inside one request. Use a serialisable
+enum for anything that crosses a turn boundary.</p>
+
+<h3>Events, not a call chain</h3>
+
+<p>The structural decision worth borrowing is how a turn is dispatched. The
+obvious implementation is a function that calls a function that calls a
+function, branching on stage. The alternative is to treat every step of the call
+as an <em>event</em> and every step's code as a <em>subscriber</em> that asked
+for it, ordered by a declared priority.</p>
+
+<div class="box repo">
+  <span class="box-label">In this repo</span>
+  <p><code>ai_autocalls_rust</code>'s <code>events/mod.rs</code> is worth reading
+  in full before designing anything here; it records what the shape bought.</p>
+  <ul>
+    <li>The whole flow is <strong>one readable list</strong> &mdash; the
+    <code>CallEvent</code> enum &mdash; rather than a chain four files deep. The
+    file it replaced was 1,200 lines in which the state machine, the wording,
+    the parsing, the database writes and the mid-form question handling were one
+    call graph.</li>
+    <li>A question asked in the middle of a form became <em>literally separate
+    code</em> from filling in that step: <code>form_question.rs</code> and
+    <code>form_step.rs</code> are two files that never call each other, ordered
+    by priority on the same event. Before, one <code>if</code> inside a
+    100-line function decided both.</li>
+    <li>Walking a form stopped needing mutually recursive <code>async fn</code>s.
+    Entering a field that is already answered simply dispatches the next
+    <code>FormStepReached</code>, so what used to require
+    <code>Box::pin</code> &mdash; &ldquo;recursion in an async fn requires
+    boxing&rdquo; &mdash; is now the dispatcher's ordinary re-entry.</li>
+    <li>Adding a step to the call is three edits: a variant, a subscriber, a
+    registration. <strong>The route handler never changes again</strong>, which
+    is the point.</li>
+  </ul>
+</div>
+
+<h3>The naming rule that enforces Chapter&nbsp;4</h3>
+
+<p>One convention from that file deserves to be copied verbatim, because it puts
+the &ldquo;model extracts, code decides&rdquo; rule into the type system:</p>
+
+<blockquote>
+  A name ending in <code>Request</code> means the caller's own words, as plain
+  data. <code>CallRequest</code>, <code>FormConfirmationRequest</code>,
+  <code>FormStepDataRequest</code> all carry a string the caller said and
+  nothing else &mdash; not a decision, not an instruction, not a command. Every
+  other name is a fact in the past tense: <code>FormRequestConfirmed</code>,
+  <code>FormStepDataFilled</code>, <code>FormFinished</code>.
+  <span class="attrib">ai_autocalls_rust, app/src/events/mod.rs</span>
+</blockquote>
+
+<p>Whether the words turn out to be an answer, a question or noise is decided by
+subscribers, not by the event. A developer who types <code>FormStepDataFilled
+{ text }</code> has made a type error in the domain sense before they have made
+one in the compiler's.</p>
+
+<h3>Forms in data, not in code</h3>
+
+<p>The last structural decision: a form is a row in a database, not a Rust
+module. <code>ai_autocalls_rust</code> defines forms, their fields, the field
+kinds and the option lists in Postgres, and its extension guide marks &ldquo;add
+a new conversational form&rdquo; as <em>no code</em>. Only a genuinely new
+<em>kind</em> of answer needs a new parser, and that is a small file with a
+single responsibility.</p>
+
+<p>This matters more than it looks, and Chapter&nbsp;16 is why: the same
+definition that validates an answer is the definition that renders the schema
+into the prompt. One source, two consumers. A form defined in Rust and described
+again in a prompt file is two sources that will drift, silently, on a Tuesday.</p>

@@ -1,0 +1,178 @@
+<h2 id="cc" class="appendix"><span class="num">C</span> Glossary</h2>
+
+<p>Terms as this book uses them, including the ones these two repositories
+invented. Where a word has a settled meaning in the task-oriented dialogue
+literature, that meaning is the one given.</p>
+
+<dl class="gloss">
+
+<dt>active fields</dt>
+<dd><em>(this project)</em> The list of questions currently being worked
+through. Not always the form's own fields &mdash; a caller who chose to be
+looked up is asked identity questions first. <span class="xref">ch. 11</span></dd>
+
+<dt>at-least-once delivery</dt>
+<dd>The guarantee every major webhook platform provides: an event will arrive,
+and may arrive more than once. Duplicates are the contract, not a defect.
+<span class="xref">ch. 28</span></dd>
+
+<dt>barge-in</dt>
+<dd>The caller speaking while the agent is talking. Handling it means cancelling
+synthesis and reconciling the conversation record to what was actually
+<em>heard</em>. <span class="xref">ch. 48</span></dd>
+
+<dt>backchannel</dt>
+<dd>&ldquo;Mm-hm&rdquo;, &ldquo;right&rdquo; &mdash; an acknowledgement spoken
+over the agent, not an attempt to take the floor. Not a barge-in.
+<span class="xref">ch. 48</span></dd>
+
+<dt>call session</dt>
+<dd><em>(this project)</em> Everything known about a call in progress: language,
+slots collected, which question is outstanding, attempts, the turn window. Lives
+in Redis and expires. <span class="xref">ch. 10</span></dd>
+
+<dt>cascade / cascaded pipeline</dt>
+<dd>Speech recognition, then a language model, then speech synthesis, as
+separate components. The dominant production architecture, and the one this
+service is the middle of. <span class="xref">ch. 2</span></dd>
+
+<dt>constrained decoding</dt>
+<dd>Masking tokens during generation so output cannot leave a grammar. In vLLM:
+<code>json_object</code> (valid JSON), <code>guided_json</code> (your schema),
+<code>guided_choice</code> (one of a list). <span class="xref">ch. 22</span></dd>
+
+<dt>containment</dt>
+<dd>The share of calls resolved without a human. Meaningless without task
+completion beside it &mdash; refusing to escalate maximises it.
+<span class="xref">ch. 39</span></dd>
+
+<dt>dialogue state tracking (DST)</dt>
+<dd>Deriving the current slot values from a conversation. A benchmarked task;
+see <em>joint goal accuracy</em>. <span class="xref">ch. 6</span></dd>
+
+<dt>endpointing</dt>
+<dd>Deciding the caller has finished, from the transcript stream rather than
+from audio silence. Faster than waiting out a silence threshold; the
+recommended default. <span class="xref">ch. 47</span></dd>
+
+<dt>event / subscriber / dispatcher</dt>
+<dd><em>(this project)</em> A fact about the call, the code that asked to hear
+about it, and the thing that routes one to the other in priority order. The
+observer pattern applied to a call flow. <span class="xref">ch. 11</span></dd>
+
+<dt>flow</dt>
+<dd><em>(this project)</em> The form currently being filled in, if any. Lives on
+the call session. <span class="xref">ch. 11</span></dd>
+
+<dt>form</dt>
+<dd>A group of slots collected together. VoiceXML's word, and every subsequent
+system's. Dialogflow CX calls it a page. <span class="xref">ch. 5</span></dd>
+
+<dt>Form Interpretation Algorithm (FIA)</dt>
+<dd>VoiceXML's procedure for visiting each unfilled field until the form is
+complete. The algorithm every slot-filling implementation converges on.
+<span class="xref">ch. 5</span></dd>
+
+<dt>implicit confirmation</dt>
+<dd>Reading a value back inside the next question, so the caller can object
+without being required to agree. Costs no turns. The default.
+<span class="xref">ch. 33</span></dd>
+
+<dt>joint goal accuracy</dt>
+<dd>The fraction of turns at which <em>every</em> slot is simultaneously
+correct. 25.65% for the best tracker on SpokenWOZ &mdash; the number behind
+Chapter&nbsp;6's central rule. <span class="xref">ch. 6</span></dd>
+
+<dt>layer (prompt)</dt>
+<dd><em>(this book)</em> One of six bands of prompt content ordered by how often
+it changes, from identity (layer 0) to per-turn runtime state (layer 5).
+<span class="xref">ch. 12</span></dd>
+
+<dt>manifest</dt>
+<dd><em>(this book)</em> The single definition of a form's slots, types,
+validators and prompts, from which both the prompt's schema text and the code's
+validators are rendered. <span class="xref">ch. 16</span></dd>
+
+<dt>mixed initiative</dt>
+<dd>The caller may answer several fields at once, in any order, without waiting
+to be asked. VoiceXML's term. <span class="xref">ch. 9</span></dd>
+
+<dt>no-input / no-match</dt>
+<dd>Silence, and speech that could not be understood. Two different failures
+needing two different responses. Three of either ends the attempt.
+<span class="xref">ch. 35</span></dd>
+
+<dt>pass-through map</dt>
+<dd><em>(this project)</em> <code>ActionDecision</code>'s flattened
+<code>serde_json::Map</code>, carrying every schema key except the one the code
+names. Makes schema keys free to add, and invisible to the compiler.
+<span class="xref">ch. 1, 16</span></dd>
+
+<dt>prefix cache</dt>
+<dd>vLLM's reuse of attention state for a shared prompt prefix. Cached in
+16-token blocks; keyed from position zero; worth 60&ndash;80% of time to first
+token when it hits. <span class="xref">ch. 26</span></dd>
+
+<dt>provenance</dt>
+<dd><em>(this book)</em> Where a slot's value came from:
+<code>Verified</code> (an authoritative source), <code>Collected</code> (the
+caller), <code>Inferred</code> (computed). The distinction that separates a bug
+from a data-protection incident. <span class="xref">ch. 7</span></dd>
+
+<dt>repair prompt</dt>
+<dd>Re-asking the model with its malformed output and the parser's complaint
+attached. Rung 2 of the degradation ladder; at most once, inside the budget.
+<span class="xref">ch. 30</span></dd>
+
+<dt>slot</dt>
+<dd>One thing the call needs to collect. VoiceXML's <em>field item
+variable</em>, Dialogflow's <em>parameter</em>. Here: a name, a typed value, a
+raw string, provenance, a confirmation flag and an attempt count.
+<span class="xref">ch. 7</span></dd>
+
+<dt>stage</dt>
+<dd><em>(this project)</em> Where a call is inside a form: confirming the start,
+collecting field N, confirming field N, reviewing the summary.
+<span class="xref">ch. 11</span></dd>
+
+<dt>step predicate</dt>
+<dd><em>(this book)</em> <code>filled &amp;&amp; valid &amp;&amp;
+(!needs_confirm || confirmed)</code>, evaluated in code over stored state.
+Never asked of the model. <span class="xref">ch. 8</span></dd>
+
+<dt>time to first token (TTFT)</dt>
+<dd>How long until generation begins. The figure comparable to the 375&nbsp;ms
+model-stage budget, and the one this project does not currently measure.
+<span class="xref">ch. 3, 39</span></dd>
+
+<dt>turn</dt>
+<dd>One request and one response &mdash; the caller said something, the system
+said something back. The unit everything in this book is measured in.</dd>
+
+<dt>turn window</dt>
+<dd><em>(this book)</em> A fixed-length ring of the last four to six turns,
+rendered into layer 5. Evidence for reference resolution, never a source of
+state. <span class="xref">ch. 6, 15</span></dd>
+
+<dt>VAD (voice activity detection)</dt>
+<dd>Classifying audio frames as speech or silence. The simplest turn-detection
+method and the slowest, because it waits out the full silence threshold every
+turn. <span class="xref">ch. 47</span></dd>
+
+<dt>warm transfer</dt>
+<dd>Handing a call to a human with a briefing first, carrying a structured card
+rather than a free-form summary &mdash; and without re-authenticating the
+caller. <span class="xref">ch. 36</span></dd>
+
+<dt>workflow (vs. agent)</dt>
+<dd>Models and tools orchestrated through predefined code paths, as against a
+model directing its own process. This system is a workflow &mdash; routing, plus
+prompt chaining across steps. <span class="xref">ch. 4</span></dd>
+
+</dl>
+
+<hr class="sep">
+
+<p class="xref" style="text-align:center">Compiled 17 September 2026 against
+<code>ai_assistant</code> at <code>fb7b48d</code> +&nbsp;working tree.
+Rebuild with <code>python docs/handbook/build.py</code>.</p>

@@ -1,5 +1,8 @@
+mod app;
 mod cache;
 mod db;
+mod domain;
+mod event;
 mod factory;
 mod session;
 mod settings;
