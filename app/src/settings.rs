@@ -12,6 +12,7 @@ pub struct DatabaseSettings {
 #[derive(Debug, Deserialize)]
 pub struct CacheSettings {
     pub session_ttl_days: u32,
+    pub call_session_ttl_seconds: u32,
 }
 
 /// Knobs for the inference calls themselves. The *where* and the *which model*

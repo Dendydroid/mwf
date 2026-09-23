@@ -17,6 +17,7 @@ timeout_seconds = 3
 
 [cache_settings]
 session_ttl_days = 1
+call_session_ttl_seconds = 3600
 
 [llm_settings]
 # A turn normally takes 1-3s against a warm vLLM. This is not sized for that, it
