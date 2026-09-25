@@ -5,6 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Declares a fieldless enum together with an `ALL` slice of its variants.
 /// Because both come from the same variant list, `ALL` can never go stale.
@@ -41,7 +42,8 @@ flat_enum! {
 }
 
 flat_enum! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
     pub enum FormSupported {
         DoctorAppointment,
     }

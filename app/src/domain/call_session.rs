@@ -1,5 +1,7 @@
 use std::default::Default;
 use crate::cache::{Cache, CacheKey};
+use crate::domain::form::Form;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use sqlx::types::chrono;
@@ -9,6 +11,8 @@ use sqlx::types::chrono::Local;
 use tracing::log::error;
 
 const CALL_MEMORY_SLOT_KEY: &str = "call_memory";
+const CALL_STATE_SLOT_KEY: &str = "call_state";
+const FORM_STATE_CONTEXT_KEY: &str = "form_state";
 
 pub struct CallSession {
     cache: Cache,
@@ -36,10 +40,11 @@ pub enum SlotValue {
     JsonObject(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CallState {
+    #[default]
     Idle,
-    FormInProgress,
+    FormInProgress(Form),
 }
 
 impl CallSession {
@@ -50,19 +55,26 @@ impl CallSession {
             .await
             .unwrap_or_default();
 
-        let call_memory = Self::read_call_memory(call_id, &slots);
+        let state = Self::read_json_slot(call_id, &slots, CALL_STATE_SLOT_KEY);
+        let call_memory = Self::read_json_slot(call_id, &slots, CALL_MEMORY_SLOT_KEY);
 
         Self {
             cache,
             call_id: call_id.into(),
             slots,
             initial_context: Default::default(),
-            state: CallState::Idle,
+            state,
             call_memory,
         }
     }
 
     pub async fn save_slots(&mut self, ttl_seconds: u64) -> bool {
+        // `state` is changed in place, so it is encoded here rather than on every change.
+        match serde_json::to_string(&self.state) {
+            Ok(encoded) => self.set_slot_value(CALL_STATE_SLOT_KEY, SlotValue::JsonObject(encoded)),
+            Err(e) => error!("Could not encode call state for {}: {e}", self.call_id),
+        }
+
         self
             .cache
             .set_serde_ex(
@@ -94,21 +106,36 @@ impl CallSession {
         &self.call_memory.conversation
     }
 
-    fn read_call_memory(call_id: &str, slots: &HashMap<String, SlotValue>) -> CallMemory {
-        let Some(slot) = slots.get(CALL_MEMORY_SLOT_KEY) else {
-            return CallMemory::default();
+    /// Everything that goes into `<context>` this turn.
+    pub fn context(&self) -> HashMap<String, String> {
+        let mut context = self.initial_context.clone();
+
+        if let CallState::FormInProgress(form) = &self.state {
+            context.insert(FORM_STATE_CONTEXT_KEY.to_string(), form.context_value());
+        }
+
+        context
+    }
+
+    fn read_json_slot<T: DeserializeOwned + Default>(
+        call_id: &str,
+        slots: &HashMap<String, SlotValue>,
+        key: &str,
+    ) -> T {
+        let Some(slot) = slots.get(key) else {
+            return T::default();
         };
 
         let SlotValue::JsonObject(encoded) = slot else {
-            error!("Call memory slot for {call_id} holds {slot:?}, expected a JsonObject");
+            error!("Slot {key} for {call_id} holds {slot:?}, expected a JsonObject");
 
-            return CallMemory::default();
+            return T::default();
         };
 
         serde_json::from_str(encoded).unwrap_or_else(|e| {
-            error!("Could not decode call memory for {call_id}: {e}");
+            error!("Could not decode slot {key} for {call_id}: {e}");
 
-            CallMemory::default()
+            T::default()
         })
     }
 }

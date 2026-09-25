@@ -11,7 +11,7 @@ mod settings;
 mod vllm;
 
 use crate::app::AppState;
-use crate::routes::middleware::session_middleware;
+use crate::routes::call_session_middleware::call_session_middleware;
 use crate::settings::AppSettings;
 use crate::vllm::VllmClient;
 use axum::{middleware, Router};
@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(CorsLayer::permissive()) // tighten in prod
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            session_middleware,
+            call_session_middleware,
         ))
         .with_state(state.clone());
 

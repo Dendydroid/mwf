@@ -4,4 +4,4 @@ use std::sync::Arc;
 
 pub mod api;
 pub mod middleware;
-mod call_session_middleware;
+pub mod call_session_middleware;
