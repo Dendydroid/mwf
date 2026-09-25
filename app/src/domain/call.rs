@@ -5,7 +5,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use schemars::JsonSchema;
-use crate::vllm::SystemPrompt;
 
 /// Declares a fieldless enum together with an `ALL` slice of its variants.
 /// Because both come from the same variant list, `ALL` can never go stale.
@@ -23,15 +22,10 @@ macro_rules! flat_enum {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerIntent {
     SmallTalk,
-    // FOR CLAUDE: Result of info goes into backend_context
     GetInformation {selected: GetInformationSupported},
-    // FOR CLAUDE: When we start a form it is crucial that we in handler set the first step and its already used in backend_context to already ask first step
     StartForm {form: FormSupported},
-    // FOR CLAUDE: This has to update call state, step state, advance step or possibly finish form and the info about the form state has to go to backend_context too
     ProvideFormFieldValue,
-    // FOR CLAUDE: The info that form isnt needed anymore has to go to backend context stating that form was cancelled and immediately we follow up with question what else can i help with
     CancelForm,
-    // FOR CLAUDE: For this handler has to add to backend_context that we need to search conversation history for answer
     ReferToContextForFormFieldValue,
     ConfirmYes,
     ConfirmNo,
@@ -45,8 +39,6 @@ flat_enum! {
         GetCurrentUAHPerEUR,
     }
 }
-
-// FOR CLAUDE: lets have builder use this enum to build particular form shapes chaining properties. and have one global mod.rs function to get all supported forms which will go into app state as property supported_forms
 
 flat_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

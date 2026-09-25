@@ -259,3 +259,33 @@ impl OutputFormat for ExtractedIntent {
         ].into_iter())
     }
 }
+
+
+/*
+----------------------------------------------------------------------------------------------------
+*/
+
+// Output for machine #2 response formulator
+
+#[derive(JsonSchema, Deserialize, Default)]
+struct SpokenResponse(String);
+
+impl ValueSchema for SpokenResponse {
+    fn valid_value_description(&self) -> &'static str {
+        "A natural, concise spoken reply of 1 to 2 sentences in plain text for text-to-speech, \
+        with numbers, currencies and dates written the way they are spoken"
+    }
+}
+
+#[derive(JsonSchema, Deserialize, Default)]
+struct FormulatedResponse {
+    spoken_response: SpokenResponse,
+}
+
+impl OutputFormat for FormulatedResponse {
+    fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_> {
+        Box::new(vec![
+            ("spoken_response", &self.spoken_response as &dyn ValueSchema),
+        ].into_iter())
+    }
+}
