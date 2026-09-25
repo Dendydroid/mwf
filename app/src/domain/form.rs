@@ -2,6 +2,7 @@ use std::iter::Map;
 use std::slice::Iter;
 use time::Date;
 
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum FormFieldValue {
     String(String),
@@ -14,7 +15,6 @@ pub enum FormFieldValue {
 
 pub struct FormField {
     pub label: String,
-    pub llm_description: String,
     pub value: Option<FormFieldValue>,
 }
 
@@ -29,14 +29,6 @@ impl Form {
             .iter()
             .map(|field| Step::new(field))
             .collect::<Vec<Step>>()
-    }
-}
-
-pub trait PersistentSlot {
-    fn unique_slot_cache_key(call_id: &str) -> String;
-
-    fn ttl_seconds() -> u64 {
-        600
     }
 }
 

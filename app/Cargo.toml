@@ -10,6 +10,7 @@ axum-extra = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
 serde = { workspace = true }
+schemars = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

@@ -12,6 +12,7 @@ time = "0.3"
 sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "migrate", "macros"] }
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1", features = ["derive"] }
+schemars = "1.2.2"
 # preserve_order: a decision's keys keep the order the model emitted them, which
 # is the order the system prompt lists them in. Without it serde_json sorts them
 # alphabetically and the client's badges come out in an order nobody chose.

@@ -3,7 +3,10 @@
 <output_rules>
 <rule>Generate the `response` in the exact language specified in <language></rule>
 <rule>Keep the response concise and conversational (1 to 2 sentences maximum)</rule>
-<rule>Rely strictly on facts inside <backend_context>; do not invent unverified details</rule>
+<rule>Rely strictly on facts and instructions inside <backend_context>; do not invent unverified details</rule>
+<rule>If <backend_context> specifies a confirmation action, ask the user to explicitly confirm the value</rule>
+<rule>If <backend_context> specifies a missing field action, prompt the user naturally for that specific field</rule>
+<rule>If <backend_context> indicates a form has been successfully completed or final information was delivered, append a follow-up asking if any further assistance is needed</rule>
 <rule>Format text strictly for Text-to-Speech: do NOT use markdown, bullet points, special characters, or emojis</rule>
 <rule>Format numbers, currencies, dates, and symbols so they read naturally when spoken by a voice synthesizer</rule>
 </output_rules>

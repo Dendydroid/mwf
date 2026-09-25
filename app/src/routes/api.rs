@@ -107,7 +107,14 @@ async fn handle_assistant_request(
         "handling assistant request"
     );
 
+    // FOR CLAUDE: Here now we need respective struct instead of ActionDecision, look at system_prompt_intent_matcher.txt
     let decision = state.llm.classify(request_text, Arc::clone(&state)).await?;
+
+
+    // FOR CLAUDE: here we match over intent and for each intent let's create a handler to which we pass state just to have all the necessary services all the time
+    // then inside the handlers we can for get_information have handlers per supported type, same goes for forms
+    // Let's initialize for started form a dedicated slot key, like call_id_form_<form_name>_<form_field>
+    
     
     let selected_instruction = decision
         .field_str("selected_instruction")
