@@ -25,6 +25,7 @@ rand = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
 reqwest = { workspace = true }
+quick-xml = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
