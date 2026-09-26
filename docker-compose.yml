@@ -96,6 +96,8 @@ services:
     environment:
       APP_ENV: ${APP_ENV}
       APP_PORT: ${APP_PORT}
+      # The container's clock, which gives the assistant its `current_time`.
+      TZ: ${APP_TIMEZONE:-UTC}
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379
       LLM_URL: http://vllm:${LLM_PORT}/v1

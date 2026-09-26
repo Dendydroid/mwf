@@ -4,6 +4,8 @@ use crate::domain::form::Form;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::sync::OwnedMutexGuard;
 use sqlx::types::chrono;
 use uuid::Uuid;
 use chrono::DateTime;
@@ -171,6 +173,46 @@ impl Default for CallMemory {
     fn default() -> Self {
         Self {
             conversation: Vec::default(),
+        }
+    }
+}
+
+/*
+----------------------------------------------------------------------------------------------------
+*/
+
+/// One lock per call, so the turns of a call are handled one at a time in this
+/// process: a turn takes it before its session is loaded and holds it until the
+/// session is saved.
+#[derive(Default)]
+pub struct CallLocks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+impl CallLocks {
+    pub async fn lock(&self, call_id: &str) -> CallLock<'_> {
+        let lock = self.0.lock().unwrap().entry(call_id.to_string()).or_default().clone();
+
+        CallLock {
+            locks: self,
+            call_id: call_id.to_string(),
+            _guard: lock.lock_owned().await,
+        }
+    }
+}
+
+pub struct CallLock<'a> {
+    locks: &'a CallLocks,
+    call_id: String,
+    _guard: OwnedMutexGuard<()>,
+}
+
+impl Drop for CallLock<'_> {
+    /// Forgets the call's lock once no other turn is waiting for it.
+    fn drop(&mut self) {
+        let mut locks = self.locks.0.lock().unwrap();
+
+        // The map's reference and this turn's `_guard`, which is dropped after this.
+        if locks.get(&self.call_id).is_some_and(|lock| Arc::strong_count(lock) == 2) {
+            locks.remove(&self.call_id);
         }
     }
 }

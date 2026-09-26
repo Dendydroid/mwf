@@ -31,9 +31,12 @@ FROM debian:bookworm-slim AS runtime
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+# tzdata makes TZ (APP_TIMEZONE in .env) work. Without it the clock stays on
+# UTC, which is what the assistant resolves "today" and "tomorrow" against.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates \
     libssl3 \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled binary

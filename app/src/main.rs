@@ -11,10 +11,9 @@ mod settings;
 mod vllm;
 
 use crate::app::AppState;
-use crate::routes::call_session_middleware::call_session_middleware;
 use crate::settings::AppSettings;
 use crate::vllm::VllmClient;
-use axum::{middleware, Router};
+use axum::Router;
 use std::any::TypeId;
 use std::io;
 use std::net::SocketAddr;
@@ -86,14 +85,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Database connected and migrations applied");
 
     let app = Router::<Arc<AppState>>::new()
-        .merge(routes::api::router())
+        .merge(routes::api::router(state.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive()) // tighten in prod
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            call_session_middleware,
-        ))
         .with_state(state.clone());
 
     let addr: SocketAddr = format!("0.0.0.0:{}", state.settings.http_port()).parse()?;

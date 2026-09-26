@@ -8,12 +8,14 @@
 <!--
   WHAT THIS IS
   ------------
-  The backend classifies one spoken sentence at a time: POST the text to
-  /assistant/handle-request and it comes back with the matched function, a
-  confidence, the language it detected and a sentence to read out. That is the
-  whole contract, and this page is the thing that supplies the speaking half of
-  it - a stand-in for whatever telephony service would eventually be on the
-  other end of a real call.
+  The backend handles one spoken sentence at a time: POST the text to
+  /assistant/handle-request, with the call's id in the `x-call-id` header, and
+  it comes back with a sentence to read out, the intent it matched, the
+  language it detected, its reasoning and an `action` for the phone side
+  (continue, end the call, transfer to a human). That is the whole contract,
+  and this page is the thing that supplies the speaking half of it - a
+  stand-in for whatever telephony service would eventually be on the other end
+  of a real call.
 
   It captures the microphone, transcribes in the browser, posts the transcript
   in exactly the shape the endpoint expects, and reads the answer back, so the
@@ -177,12 +179,11 @@
   /* The matched function is the headline of a turn, so it leads and is the one
      badge that carries its value without its key. */
   .tag.fn { color: var(--system); border-color: var(--system); }
-  /* Cosmetic only, and keyed on names the prompt happens to use today: these
-     are the two outcomes worth spotting from across the room. Renaming a
-     function in the prompt costs nothing but the colour. */
-  .tag.fn[data-function="fallback_human"] { color: var(--warn); border-color: var(--warn); }
-  .tag.fn[data-function="prompt_injection_attempt"],
-  .tag.fn[data-function="attack"] { color: var(--error); border-color: var(--error); }
+  /* Cosmetic only, and keyed on intent labels from domain/call.rs: these are
+     the two outcomes worth spotting from across the room. Renaming an intent
+     costs nothing but the colour. */
+  .tag.fn[data-function="transfer_to_human"] { color: var(--warn); border-color: var(--warn); }
+  .tag.fn[data-function="unsupported"] { color: var(--error); border-color: var(--error); }
 
   /* A true boolean is a fact about this turn; a false one is the absence of it.
      Showing both, with the false ones dimmed, keeps the badge row in the same
@@ -221,8 +222,8 @@
   <h1>ai assistant mimic client</h1>
   <p class="subtitle">
     Speak &rarr; Chrome transcribes &rarr; <code>POST /assistant/handle-request</code> &rarr;
-    the answer is read back. Every key the system prompt's schema asks for,
-    beyond the answer itself, is shown as a badge under it.
+    the answer is read back. Every other key of the response is shown as a
+    badge under it.
   </p>
 
   <section class="panel">
@@ -255,6 +256,10 @@
       </span>
     </div>
     <p class="interim" id="interim"></p>
+    <p class="hint">
+      Call id <code id="call-id"></code>, sent as <code>x-call-id</code> with every request.
+      Reload the page to start a new call.
+    </p>
   </section>
 
   <!-- Typing drives the identical request path, which is how to test when
@@ -262,7 +267,7 @@
        it simply misheard. -->
   <section class="panel">
     <label for="typed">Or type a sentence and press Enter (same endpoint, no microphone)</label>
-    <input id="typed" type="text" autocomplete="off" placeholder="I want to cancel my subscription">
+    <input id="typed" type="text" autocomplete="off" placeholder="I would like to book a doctor appointment">
   </section>
 
   <section class="panel">
@@ -274,17 +279,21 @@
 (() => {
   "use strict";
 
-  // The contract, fixed by routes/api.rs. The path is asserted against this
-  // file by `mimic_client_page_posts_to_the_endpoint_this_router_serves`, so a
-  // rename on the server side fails the test suite rather than this page.
+  // The contract, fixed by `ASSISTANT_ENDPOINT_PATH` in routes/api.rs and
+  // `CALL_IDENTIFIER` in routes/call_session_middleware.rs.
   const ENDPOINT_PATH = "/assistant/handle-request";
+  const CALL_ID_HEADER = "x-call-id";
+
+  // One call per page load. The backend keeps the call's form and history
+  // under this id, so it has to be unguessable.
+  const CALL_ID = crypto.randomUUID();
 
   const DEFAULT_LANG = "en-US";
   const STORAGE_BASE_URL = "assistant.mimic.baseUrl";
   const STORAGE_LANG = "assistant.mimic.lang";
 
   // The model reports the language it detected as a bare "en" / "de" / "ru"
-  // (that is the prompt's schema). speechSynthesis wants a full BCP-47 tag, so
+  // (ISO 639-1). speechSynthesis wants a full BCP-47 tag, so
   // the two are bridged here - and preferring what the model detected over what
   // the selector says means a German sentence is read back in German even if
   // the microphone was left on English.
@@ -299,6 +308,8 @@
   const langSelect = document.getElementById("lang");
   const typedInput = document.getElementById("typed");
   const logEl = document.getElementById("log");
+
+  document.getElementById("call-id").textContent = CALL_ID;
 
   // -- Remembered settings -------------------------------------------------
 
@@ -321,8 +332,9 @@
   langSelect.addEventListener("change", () => {
     writeStored(STORAGE_LANG, langSelect.value);
     // Recognition latches its language at start(), so a mid-call switch only
-    // takes effect once the current session is restarted.
-    if (inCall) { stopRecognition(); listenAgain(); }
+    // takes effect once the current session is restarted. Only a running one
+    // is: while an answer is awaited or read out, the next start picks it up.
+    if (recognition) { stopRecognition(); listenAgain(); }
   });
 
   // -- Log ------------------------------------------------------------------
@@ -334,8 +346,8 @@
 
   // The one key the page treats specially, because it is the sentence being
   // read out rather than a fact about the turn. Everything else in the response
-  // is a badge, whatever it is called - which is what lets a key added to the
-  // system prompt show up here with no change to this file.
+  // is a badge, whatever it is called - which is what lets a key added to
+  // `AssistantResponse` in routes/api.rs show up here with no change to this file.
   const ANSWER_KEY = "answer";
 
   // Also not a badge: the function name leads the row and is rendered as its
@@ -347,7 +359,7 @@
    * Builds one badge for a key/value pair of the decision.
    *
    * The shape is chosen from the value's type rather than from a list of known
-   * keys, so a new key in the prompt renders sensibly the first time it appears:
+   * keys, so a new key in the response renders sensibly the first time it appears:
    *
    *   boolean   is_greeting          - lit when true, dimmed when false
    *   0..1      confidence 95%       - as a percentage, with a meter behind it
@@ -401,8 +413,8 @@
    *
    * `decision`, when given, is the endpoint's whole reply: its keys other than
    * `answer` each become a badge, in the order the response lists them - which
-   * is the order the system prompt's schema lists them in, preserved all the way
-   * through the backend.
+   * is the field order of `AssistantResponse`, preserved all the way through
+   * the backend.
    */
   function addTurn(kind, who, text, decision) {
     logEl.querySelector(".empty")?.remove();
@@ -452,7 +464,7 @@
 
     const response = await fetch(base + ENDPOINT_PATH, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", [CALL_ID_HEADER]: CALL_ID },
       // The backend does not use `language` to decide anything - the model
       // detects that itself - but it knows which language the microphone was
       // listening for, which nothing on the server side otherwise can, and it
@@ -462,11 +474,6 @@
         request_text: requestText,
         language: langSelect.value || DEFAULT_LANG,
       }),
-      // A cookie session is attached by the server's middleware; sending it
-      // back keeps one browser on one session instead of minting a new one per
-      // request. Same-origin is the default, this only matters when the base
-      // URL points elsewhere.
-      credentials: "include",
     });
 
     const raw = await response.text();
@@ -481,7 +488,7 @@
 
     // `answer` is the only key this page requires; every other one is rendered
     // generically, so the check stops here rather than validating a shape the
-    // system prompt is meant to keep changing.
+    // backend is meant to keep changing.
     if (typeof payload?.[ANSWER_KEY] !== "string") {
       throw new Error(`response did not carry a string \`${ANSWER_KEY}\`: ${raw}`);
     }
@@ -496,7 +503,8 @@
   // requests on one GPU that serves them one at a time. Each then waits behind
   // the others and the last ones hit the server's inference timeout - which is
   // exactly how a turn that was merely slow came back as an error. One turn at
-  // a time, and what was said meanwhile is kept for the moment the answer lands.
+  // a time: the microphone is off until the answer lands (see `exchange`), and
+  // a sentence typed meanwhile is kept for that moment.
   let inFlight = false;
   let queuedUtterance = null;
 
@@ -527,6 +535,10 @@
 
   async function exchange(text) {
     addTurn("caller", "You said", text);
+    // The microphone stays off until the answer is in (and read out), so
+    // nothing said meanwhile turns into another request.
+    stopRecognition();
+    interimEl.textContent = "";
     setStatus("thinking", "Asking the model…");
 
     let reply;
@@ -541,12 +553,32 @@
 
     addTurn("system", "Assistant answered", reply[ANSWER_KEY], reply);
 
+    const then = () => afterAnswer(reply.action);
+
     if (speakBackInput.checked) {
       // A soft read of `language_detected`: the schema is free to rename or drop
       // it, and the selector is a perfectly good fallback when it does.
-      speak(reply[ANSWER_KEY], VOICE_FOR[reply.language_detected] || langSelect.value);
+      speak(reply[ANSWER_KEY], VOICE_FOR[reply.language_detected] || langSelect.value, then);
     } else {
-      resumeAfterAnswer();
+      then();
+    }
+  }
+
+  // `action` is what the phone side does once the answer is spoken, and this
+  // page is the phone side. There is no human here to transfer to, so a
+  // transfer ends the call the same way a goodbye does.
+  function afterAnswer(action) {
+    switch (action) {
+      case "end_call":
+        endCall();
+        setStatus("idle", "The assistant ended the call");
+        break;
+      case "transfer_to_human":
+        endCall();
+        setStatus("idle", "Transferred to a human (not simulated)");
+        break;
+      default:
+        resumeAfterAnswer();
     }
   }
 
@@ -557,15 +589,16 @@
   // -- Text to speech -------------------------------------------------------
 
   /**
-   * Reads the answer back, then hands the microphone back to the recogniser.
+   * Reads the answer back, then runs `then`, which normally hands the
+   * microphone back to the recogniser.
    *
    * Recognition is suspended while this plays, because the microphone would
    * otherwise hear the machine's own voice and transcribe the answer as if the
    * caller had said it - which turns into an endless self-conversation.
    */
-  function speak(text, lang) {
+  function speak(text, lang, then) {
     if (!("speechSynthesis" in window)) {
-      resumeAfterAnswer();
+      then();
       return;
     }
 
@@ -574,7 +607,7 @@
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = lang;
-    utterance.onend = utterance.onerror = resumeAfterAnswer;
+    utterance.onend = utterance.onerror = then;
 
     window.speechSynthesis.cancel();   // drop anything still queued
     window.speechSynthesis.speak(utterance);
@@ -606,6 +639,7 @@
     recognition = null;
     stopping.onend = null;      // detached first, so it cannot auto-restart
     stopping.onerror = null;
+    stopping.onresult = null;   // or hand in a late result
     stopping.abort();
   }
 
@@ -692,7 +726,8 @@
     callButton.textContent = "End call";
     callButton.classList.add("hangup");
     interimEl.textContent = "";
-    startRecognition();
+    // A typed sentence may still be waiting for its answer, which starts the microphone.
+    if (!inFlight) { startRecognition(); }
   }
 
   function endCall() {

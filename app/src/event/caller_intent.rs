@@ -1,6 +1,6 @@
 use crate::domain::call::{CallAction, CallerIntent, FormSupported};
 use crate::domain::call_session::CallState;
-use crate::domain::form::{Form, FormFieldKind, StepState};
+use crate::domain::form::{Form, FormField, FormFieldKind, StepState};
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use tracing::info;
 
@@ -105,8 +105,21 @@ impl EventHandler<IntentExtracted> for CallStateHandler {
                 info!(call_id = %event.call_id, form = %form.context_value(), "Form completed");
 
                 event.state = CallState::Idle;
+            } else if event.action == CallAction::Continue {
+                event.backend_context = format!("{} {}", event.backend_context, next_step(form));
             }
         }
+    }
+}
+
+/// The question the caller is asked next, decided here rather than left to machine #2.
+fn next_step(form: &Form) -> String {
+    match form.current_field() {
+        Some(FormField { description, value: Some(value), state: StepState::AwaitingConfirmation, .. }) => {
+            format!("Next, ask the caller to confirm that {description} is {value}.")
+        }
+        Some(field) => format!("Next, ask the caller for: {}.", field.description),
+        None => String::new(),
     }
 }
 
@@ -134,7 +147,7 @@ fn fill(form: &mut Form, field: Option<&str>, value: Option<&str>) -> String {
     let (name, kind) = (target.name.clone(), target.kind);
 
     let Some(text) = value else {
-        return format!("The caller gave no value for {name}. Ask for it again.");
+        return format!("The caller gave no value for {name}.");
     };
 
     // Parsed with the field's own kind, so filling it cannot fail.
@@ -144,7 +157,7 @@ fn fill(form: &mut Form, field: Option<&str>, value: Option<&str>) -> String {
 
             format!("Recorded \"{text}\" for {name}.")
         }
-        None => format!("Could not understand \"{text}\" as a {kind:?} value for {name}. Ask for it again."),
+        None => format!("Could not understand \"{text}\" as a {kind:?} value for {name}."),
     }
 }
 
@@ -170,7 +183,7 @@ fn confirm(form: &mut Form) -> String {
         }
         // A yes to a yes-or-no field is its value, not a confirmation.
         (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("true")),
-        _ => format!("The caller said yes, but {name} has no value to confirm yet. Ask for it."),
+        _ => format!("The caller said yes, but {name} has no value to confirm yet."),
     }
 }
 
@@ -187,14 +200,14 @@ fn reject(form: &mut Form) -> String {
             let failures = form.current_field().map_or(0, |field| field.confirmation_failed_counter);
             if failures >= MAX_CONFIRMATION_FAILURES {
                 format!(
-                    "The caller rejected the value for {name} {failures} times. Apologize, ask for it once more \
-                    and offer to transfer them to a human agent."
+                    "The caller rejected the value for {name} {failures} times. Apologize and offer to transfer \
+                    them to a human agent."
                 )
             } else {
-                format!("The caller said the value for {name} is wrong. Ask for it again.")
+                format!("The caller said the value for {name} is wrong.")
             }
         }
         (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("false")),
-        _ => format!("The caller said no, but {name} has no value to reject. Ask for it."),
+        _ => format!("The caller said no, but {name} has no value to reject."),
     }
 }

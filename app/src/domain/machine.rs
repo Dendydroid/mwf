@@ -172,7 +172,17 @@ fn json_output_format<T: JsonSchema>() -> String {
         .into_iter()
         .flatten()
         .map(|(name, property)| {
-            let kind = property.get("type").cloned().unwrap_or_else(|| property.clone());
+            // An `Option` field is `["string", "null"]` here, which the model copies as an
+            // array. It is left out when it has no value, so only its own type is shown.
+            let kind = match property.get("type") {
+                Some(Value::Array(kinds)) => kinds
+                    .iter()
+                    .find(|kind| kind.as_str() != Some("null"))
+                    .cloned()
+                    .unwrap_or_default(),
+                Some(kind) => kind.clone(),
+                None => property.clone(),
+            };
             (name.clone(), kind)
         })
         .collect();
@@ -261,7 +271,8 @@ struct FormFieldName(Option<String>);
 
 impl ValueSchema for FormFieldName {
     fn valid_value_description(&self) -> &'static str {
-        "Name of the field in <form_state> that `form_field_value` is for, or null when the utterance gives no form value"
+        "Name of the field in <form_state> that `form_field_value` is for. Set it only when the utterance gives \
+        a form value, otherwise leave `form_field` out"
     }
 }
 
@@ -270,7 +281,8 @@ struct ExtractedValue(Option<String>);
 
 impl ValueSchema for ExtractedValue {
     fn valid_value_description(&self) -> &'static str {
-        "The value the caller gave for that field, or null. Write dates as YYYY-MM-DD, resolving relative \
+        "The value the caller gave for that field. Set it only when the caller gave one, otherwise leave \
+        `form_field_value` out. Write dates as YYYY-MM-DD, resolving relative \
         dates such as \"next Tuesday\" against `current_time` in <context>, numbers as digits, yes and no \
         as true and false, and text as the caller said it"
     }
@@ -408,13 +420,10 @@ impl Machine {
                 "Reply in the language given by <language> in <context>",
                 "Rely strictly on the facts and instructions in <backend_context>; never invent details it \
                 does not state",
-                "When <form_state> has a `current_field`, end the reply with exactly one question about it: \
-                ask for it when it is `queued`, or read its value back and ask the caller to confirm it when \
-                it is `awaiting_confirmation`. Use the field's `description`, never its raw name",
                 "Never ask more than one question in a reply",
                 "When there is no <form_state> and you delivered information or a form was completed or \
                 cancelled, ask whether the caller needs anything else",
-                "Say forms and information in plain words, never as their snake_case names",
+                "Say forms, fields and information in plain words, never as their snake_case names",
                 "No markdown, lists, special characters or emojis: the reply is read out by a speech \
                 synthesizer",
             ]

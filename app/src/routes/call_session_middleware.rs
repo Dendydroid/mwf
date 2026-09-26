@@ -30,6 +30,9 @@ pub async fn call_session_middleware(
         return ApiError::BadRequest(format!("{CALL_IDENTIFIER} header is required")).into_response();
     };
 
+    // Held until the session is saved, so the call's next turn loads what this one saved.
+    let _turn = state.call_locks.lock(&call_id).await;
+
     let mut call_session = CallSession::from_or_new(&call_id, state.cache.clone()).await;
 
     let mut loaded = CallSessionLoaded::new(&call_id);

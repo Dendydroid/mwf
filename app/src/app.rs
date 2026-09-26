@@ -1,5 +1,6 @@
 use crate::cache::Cache;
 use crate::db::Database;
+use crate::domain::call_session::CallLocks;
 use crate::event::event_bus::Dispatcher;
 use crate::event::events::events;
 use crate::factory::Factory;
@@ -18,6 +19,7 @@ pub struct AppState {
     pub http_client: Client,
     pub settings: AppSettings,
     pub event_dispatcher: Dispatcher,
+    pub call_locks: CallLocks,
 }
 
 impl AppState {
@@ -32,6 +34,7 @@ impl AppState {
             http_client: Client::new(),
             settings,
             event_dispatcher: events(),
+            call_locks: CallLocks::default(),
         }
     }
 }

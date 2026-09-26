@@ -4,12 +4,13 @@ use crate::domain::call_session::{CallSession, CallTurn, Transcript};
 use crate::domain::machine::{ExtractedIntent, FormulatedResponse, Machine};
 use crate::error::ApiError;
 use crate::event::caller_intent::IntentExtracted;
+use crate::routes::call_session_middleware::call_session_middleware;
 use crate::session::UserSession;
 use axum::extract::{Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::Html;
 use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::{middleware, Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,11 +22,17 @@ pub const ASSISTANT_ENDPOINT_PATH: &str = "/assistant/handle-request";
 pub const MIMIC_CLIENT_PATH: &str = "/mimic-client";
 const MIMIC_CLIENT_PAGE: &str = include_str!("../../../client/index.html");
 
-pub fn router() -> Router<Arc<AppState>> {
+pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::<Arc<AppState>>::new()
         .route("/version", get(version))
         .route("/test-session", get(session))
-        .route(ASSISTANT_ENDPOINT_PATH, post(handle_assistant_request))
+        // Only the assistant needs a call session. The page, `/version` and CORS
+        // preflights get through without an `x-call-id`.
+        .route(
+            ASSISTANT_ENDPOINT_PATH,
+            post(handle_assistant_request)
+                .route_layer(middleware::from_fn_with_state(state, call_session_middleware)),
+        )
         .route(MIMIC_CLIENT_PATH, get(mimic_client))
 }
 
@@ -114,7 +121,7 @@ async fn handle_assistant_request(
         ));
     }
 
-    // Held for the whole turn: turns of one call are handled one at a time.
+    // Turns of one call are handled one at a time by the call lock in `call_session_middleware`.
     let mut session = call_session.write().await;
     let call_id = session.call_id.clone();
 
