@@ -106,6 +106,14 @@ impl CallSession {
         &self.call_memory.conversation
     }
 
+    /// What the assistant said last, for repeating it.
+    pub fn last_answer(&self) -> Option<&str> {
+        self.call_memory
+            .conversation
+            .last()
+            .map(|turn| turn.llm_transcript.transcript.as_str())
+    }
+
     /// Everything that goes into `<context>` this turn.
     pub fn context(&self) -> HashMap<String, String> {
         let mut context = self.initial_context.clone();

@@ -1,5 +1,7 @@
+use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use time::format_description::well_known::Iso8601;
 use time::Date;
 use crate::domain::call::FormSupported;
 
@@ -12,6 +14,27 @@ pub enum FormFieldKind {
     Float,
     Bool,
     Date,
+}
+
+impl FormFieldKind {
+    /// Reads a value the way the intent matcher is told to write it: digits for
+    /// numbers, true or false for bool, YYYY-MM-DD for dates.
+    pub fn parse(self, text: &str) -> Option<FormFieldValue> {
+        let text = text.trim();
+
+        match self {
+            FormFieldKind::String => (!text.is_empty()).then(|| FormFieldValue::String(text.to_string())),
+            FormFieldKind::UnsignedInteger => text.parse().ok().map(FormFieldValue::UnsignedInteger),
+            FormFieldKind::Integer => text.parse().ok().map(FormFieldValue::Integer),
+            FormFieldKind::Float => text.replace(',', ".").parse().ok().map(FormFieldValue::Float),
+            FormFieldKind::Bool => match text.to_lowercase().as_str() {
+                "true" | "yes" => Some(FormFieldValue::Bool(true)),
+                "false" | "no" => Some(FormFieldValue::Bool(false)),
+                _ => None,
+            },
+            FormFieldKind::Date => Date::parse(text, &Iso8601::DATE).ok().map(FormFieldValue::Date),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -35,6 +58,19 @@ impl FormFieldValue {
             FormFieldValue::Float(_) => FormFieldKind::Float,
             FormFieldValue::Bool(_) => FormFieldKind::Bool,
             FormFieldValue::Date(_) => FormFieldKind::Date,
+        }
+    }
+}
+
+impl Display for FormFieldValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FormFieldValue::String(s) => f.write_str(s),
+            FormFieldValue::UnsignedInteger(n) => write!(f, "{n}"),
+            FormFieldValue::Integer(n) => write!(f, "{n}"),
+            FormFieldValue::Float(n) => write!(f, "{n}"),
+            FormFieldValue::Bool(b) => write!(f, "{b}"),
+            FormFieldValue::Date(d) => write!(f, "{d}"),
         }
     }
 }
@@ -98,14 +134,20 @@ impl Form {
         self.fields.iter_mut().find(|field| field.state != StepState::Completed)
     }
 
+    pub fn find_field(&self, name: &str) -> Option<&FormField> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
     pub fn is_filled(&self) -> bool {
         self.current_field().is_none()
     }
 
-    /// Sets the current field's value, which the caller then has to confirm.
-    /// `false` when the form is already filled or the value is of the wrong kind.
-    pub fn fill_current(&mut self, value: FormFieldValue) -> bool {
-        match self.current_field_mut() {
+    /// Sets a field's value, which the caller then has to confirm. A completed
+    /// field is reopened, and since every field before it is completed too, it
+    /// becomes the current one. `false` when there is no such field or the
+    /// value is of the wrong kind.
+    pub fn fill_field(&mut self, name: &str, value: FormFieldValue) -> bool {
+        match self.fields.iter_mut().find(|field| field.name == name) {
             Some(field) if field.kind == value.kind() => {
                 field.value = Some(value);
                 field.state = StepState::AwaitingConfirmation;
@@ -142,6 +184,18 @@ impl Form {
             }
             _ => false,
         }
+    }
+
+    /// `name: value` for every field, e.g. for telling the caller what was filled.
+    pub fn values_summary(&self) -> String {
+        self.fields
+            .iter()
+            .map(|field| match &field.value {
+                Some(value) => format!("{}: {value}", field.name),
+                None => format!("{}: none", field.name),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// The form as it goes into `<context>`.

@@ -22,7 +22,7 @@ macro_rules! flat_enum {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerIntent {
-    SmallTalk,
+    Unsupported,
     GetInformation {selected: GetInformationSupported},
     StartForm {form: FormSupported},
     ProvideFormFieldValue,
@@ -31,6 +31,19 @@ pub enum CallerIntent {
     ConfirmYes,
     ConfirmNo,
     CorrectFormFieldValue,
+    Repeat,
+    EndCall,
+    TransferToHuman,
+}
+
+/// What the phone side has to do once the answer is spoken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallAction {
+    #[default]
+    Continue,
+    EndCall,
+    TransferToHuman,
 }
 
 flat_enum! {
@@ -56,8 +69,8 @@ impl CallerIntent {
 
         // Compile-time guard: adding a CallerIntent variant breaks this match,
         // pointing you here to also add it to the list below.
-        match SmallTalk {
-            SmallTalk
+        match Unsupported {
+            Unsupported
             | GetInformation { .. }
             | StartForm { .. }
             | ProvideFormFieldValue
@@ -65,26 +78,60 @@ impl CallerIntent {
             | ReferToContextForFormFieldValue
             | ConfirmYes
             | ConfirmNo
-            | CorrectFormFieldValue => {}
+            | CorrectFormFieldValue
+            | Repeat
+            | EndCall
+            | TransferToHuman => {}
         }
 
         let mut all = vec![
-            SmallTalk,
+            Unsupported,
             ProvideFormFieldValue,
             CancelForm,
             ReferToContextForFormFieldValue,
             ConfirmYes,
             ConfirmNo,
             CorrectFormFieldValue,
+            Repeat,
+            EndCall,
+            TransferToHuman,
         ];
-        all.extend(GetInformationSupported::ALL.iter().map(|&selected| GetInformation { selected }));
-        all.extend(FormSupported::ALL.iter().map(|&form| StartForm { form }));
+        all.extend(Self::supported_requests());
         all
     }
 
     /// Labels of every concrete intent, as rendered by `Display`.
     pub fn all_labels() -> Vec<String> {
         Self::all().iter().map(ToString::to_string).collect()
+    }
+
+    /// The intent a label names, as rendered by `Display`.
+    pub fn from_label(label: &str) -> Option<CallerIntent> {
+        Self::all().into_iter().find(|intent| intent.to_string() == label)
+    }
+
+    /// What the caller can ask for: every information request and every form.
+    pub fn supported_requests() -> Vec<CallerIntent> {
+        GetInformationSupported::ALL
+            .iter()
+            .map(|&selected| CallerIntent::GetInformation { selected })
+            .chain(FormSupported::ALL.iter().map(|&form| CallerIntent::StartForm { form }))
+            .collect()
+    }
+
+    /// Backend context for the response formulator on `Unsupported`: a polite
+    /// refusal that lists what the caller can ask for instead.
+    pub fn unsupported_backend_context() -> String {
+        let supported = Self::supported_requests()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        format!(
+            "The caller asked for something that is not supported. Politely say so \
+            and list, in plain words, what you can help with instead: {supported}"
+        )
     }
 }
 
@@ -93,7 +140,7 @@ impl Display for CallerIntent {
         // Written arm by arm rather than as one match, because the variants that
         // carry a payload spell it into the label and the bare ones do not.
         match self {
-            CallerIntent::SmallTalk => f.write_str("small_talk"),
+            CallerIntent::Unsupported => f.write_str("unsupported"),
             CallerIntent::GetInformation {selected} => write!(f, "get_information[{selected}]"),
             CallerIntent::StartForm {form} => write!(f, "start_form[{form}]"),
             CallerIntent::ProvideFormFieldValue => f.write_str("provide_form_field_value"),
@@ -102,6 +149,9 @@ impl Display for CallerIntent {
             CallerIntent::ConfirmYes => f.write_str("confirm_yes"),
             CallerIntent::ConfirmNo => f.write_str("confirm_no"),
             CallerIntent::CorrectFormFieldValue => f.write_str("correct_form_field_value"),
+            CallerIntent::Repeat => f.write_str("repeat"),
+            CallerIntent::EndCall => f.write_str("end_call"),
+            CallerIntent::TransferToHuman => f.write_str("transfer_to_human"),
         }
     }
 }

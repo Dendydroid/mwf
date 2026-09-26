@@ -1,16 +1,21 @@
 use crate::app::AppState;
+use crate::domain::call::{CallAction, CallerIntent};
+use crate::domain::call_session::{CallSession, CallTurn, Transcript};
+use crate::domain::machine::{ExtractedIntent, FormulatedResponse, Machine};
 use crate::error::ApiError;
+use crate::event::caller_intent::IntentExtracted;
 use crate::session::UserSession;
 use axum::extract::{Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::Html;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::info;
-use tracing::log::error;
+use tracing::{error, info, warn};
 
 pub const ASSISTANT_ENDPOINT_PATH: &str = "/assistant/handle-request";
 pub const MIMIC_CLIENT_PATH: &str = "/mimic-client";
@@ -81,91 +86,134 @@ struct AssistantRequestPayload {
     language: Option<String>,
 }
 
+/// `answer` is what the caller hears; the mimic client shows every other key
+/// as a badge, led by `selected_function`, and speaks in `language_detected`.
 #[derive(Serialize)]
 struct AssistantResponse {
     answer: String,
-
-    #[serde(flatten)]
-    fields: serde_json::Map<String, serde_json::Value>,
+    selected_function: String,
+    language_detected: String,
+    action: CallAction,
+    reasoning: String,
 }
+
+const BACKEND_CONTEXT_KEY: &str = "backend_context";
+const LANGUAGE_CONTEXT_KEY: &str = "language";
+const FALLBACK_LANGUAGE: &str = "en";
 
 async fn handle_assistant_request(
     State(state): State<Arc<AppState>>,
+    Extension(call_session): Extension<Arc<RwLock<CallSession>>>,
     Json(payload): Json<AssistantRequestPayload>,
 ) -> Result<Json<AssistantResponse>, ApiError> {
-    let request_text = payload.request_text.trim();
+    let utterance = payload.request_text.trim();
 
-    if request_text.is_empty() {
+    if utterance.is_empty() {
         return Err(ApiError::BadRequest(
             "request_text must not be empty".to_string(),
         ));
     }
 
+    // Held for the whole turn: turns of one call are handled one at a time.
+    let mut session = call_session.write().await;
+    let call_id = session.call_id.clone();
+
     info!(
-        request_text,
+        call_id,
+        utterance,
         language = payload.language.as_deref().unwrap_or("unspecified"),
-        "handling assistant request"
+        "Handling assistant request"
     );
 
-    // FOR CLAUDE: Here now we need respective struct instead of ActionDecision, look at system_prompt_intent_matcher.txt
-    let decision = state.llm.classify(request_text, Arc::clone(&state)).await?;
+    // 1. Machine #1: what does the caller want?
+    let extracted: ExtractedIntent = Machine::intent_matcher()
+        .query(&state.llm, utterance, &HashMap::new(), &session)
+        .await?;
 
+    let intent = extracted.intent().unwrap_or_else(|| {
+        warn!(call_id, label = extracted.intent_label(), "Unknown intent, treating it as unsupported");
 
-    // FOR CLAUDE: here we match over intent and for each intent let's create a handler to which we pass state just to have all the necessary services all the time
-    // then inside the handlers we can for get_information have handlers per supported type, same goes for forms
-    // Let's initialize for started form a dedicated slot key, like call_id_form_<form_name>_<form_field>
-    
-    
-    let selected_instruction = decision
-        .field_str("selected_instruction")
-        .unwrap_or("none")
-        .to_string();
+        CallerIntent::Unsupported
+    });
+    let language = match extracted.language() {
+        "" => FALLBACK_LANGUAGE.to_string(),
+        language => language.to_string(),
+    };
 
-    // For `GetInformation` the first decision only says *what* was asked. The
-    // handler fetches the facts and a second call words them, so that decision
-    // replaces the first as the response. Anything else, or a failure to fetch,
-    // keeps the classification's own answer.
-    let decision = match state.instructions.get(&selected_instruction) {
-        Some(instruction) if instruction.is_get_information() => {
-            match instruction.run(Arc::clone(&state)).await {
-                Ok(answer_context) => {
-                    state
-                        .llm
-                        .instruction_get_information_create_answer(
-                            request_text,
-                            instruction,
-                            &answer_context,
-                        )
-                        .await?
-                }
+    // 2. Facts for `GetInformation`, fetched here because event handlers cannot await.
+    let information = match intent {
+        CallerIntent::GetInformation { selected } => {
+            match selected.fetch(&state.http_client).await {
+                Ok(information) => Some(information),
                 Err(e) => {
-                    error!("Instruction {selected_instruction} failed: {e:#}");
+                    error!(call_id, "Could not fetch {selected}: {e:#}");
 
-                    decision
+                    None
                 }
             }
         }
-        Some(_) => decision,
-        None => {
-            error!("Could not find {selected_instruction} instruction in the registry");
+        _ => None,
+    };
 
-            decision
+    // 3. State changes: forms and steps.
+    let previous_state = session.state.clone();
+
+    let mut event = IntentExtracted::new(&call_id, intent, std::mem::take(&mut session.state));
+    event.form_field = extracted.form_field().map(str::to_string);
+    event.form_field_value = extracted.form_field_value().map(str::to_string);
+    event.information = information;
+
+    state.event_dispatcher.dispatch(&mut event);
+
+    session.state = event.state;
+
+    // 4. Machine #2: the answer. A repeat is the last answer word for word.
+    let last_answer = session.last_answer().map(str::to_string);
+    let answer = match (intent, last_answer) {
+        (CallerIntent::Repeat, Some(last_answer)) => last_answer,
+        _ => {
+            let context = HashMap::from([
+                (BACKEND_CONTEXT_KEY.to_string(), event.backend_context),
+                (LANGUAGE_CONTEXT_KEY.to_string(), language.clone()),
+            ]);
+
+            match Machine::response_formulator()
+                .query::<FormulatedResponse>(&state.llm, utterance, &context, &session)
+                .await
+            {
+                Ok(formulated) => formulated.into_spoken_response(),
+                Err(e) => {
+                    // The caller never hears how this turn went, so none of it is kept.
+                    session.state = previous_state;
+
+                    return Err(e.into());
+                }
+            }
         }
     };
 
-    // The whole decision, whatever shape the schema currently has, rather than
-    // a hand-picked three fields that would silently stop covering it the next
-    // time the prompt gains a key. `selected_instruction` is pulled out as well
-    // because it is what anyone reading the log greps for first - and softly,
-    // since the schema is free to rename it.
-    info!(
-        selected_instruction = decision.field_str("selected_instruction").unwrap_or("none"),
-        decision = %decision.fields_as_json(),
-        "classified assistant request"
-    );
+    // 5. Remember the turn.
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let transcript = |text: &str| Transcript {
+        language: language.clone(),
+        transcript: text.to_string(),
+        timestamp,
+    };
+
+    session.save_call_turn(CallTurn {
+        caller_transcript: transcript(utterance),
+        llm_transcript: transcript(&answer),
+    });
+
+    info!(call_id, intent = %intent, action = ?event.action, answer, "Answered assistant request");
 
     Ok(Json(AssistantResponse {
-        answer: decision.humanlike_sentence_answer,
-        fields: decision.fields,
+        answer,
+        selected_function: intent.to_string(),
+        language_detected: language,
+        action: event.action,
+        reasoning: extracted.reasoning().to_string(),
     }))
 }

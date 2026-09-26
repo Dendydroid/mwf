@@ -1,4 +1,5 @@
 use crate::event::call_session::{CallSessionLoaded, InitialContextHandler};
+use crate::event::caller_intent::{CallStateHandler, IntentExtracted};
 use crate::event::event_bus::{Dispatcher, DispatcherBuilder};
 use std::sync::Arc;
 
@@ -9,6 +10,7 @@ pub fn events() -> Dispatcher {
     let mut b = DispatcherBuilder::default();
 
     b.add::<CallSessionLoaded, _>(Arc::new(InitialContextHandler));
+    b.add::<IntentExtracted, _>(Arc::new(CallStateHandler));
 
     //b.register(Arc::new(OnboardingSubscriber { repo, mailer }));
 
