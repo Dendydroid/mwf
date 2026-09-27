@@ -2,6 +2,7 @@ use crate::domain::call::{CallAction, CallerIntent, FormSupported};
 use crate::domain::call_session::CallState;
 use crate::domain::form::{Form, FormField, FormFieldKind, StepState};
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
+use crate::event::form::FormCompleted;
 use tracing::info;
 
 /// After this many rejected values for one field, the caller is offered a human.
@@ -45,7 +46,7 @@ impl Event for IntentExtracted {}
 pub struct CallStateHandler;
 
 impl EventHandler<IntentExtracted> for CallStateHandler {
-    fn handle(&self, event: &mut IntentExtracted, _: &Dispatcher) {
+    fn handle(&self, event: &mut IntentExtracted, dispatcher: &Dispatcher) {
         event.backend_context = match event.intent {
             CallerIntent::Unsupported => CallerIntent::unsupported_backend_context(),
             CallerIntent::GetInformation { selected } => match &event.information {
@@ -104,7 +105,9 @@ impl EventHandler<IntentExtracted> for CallStateHandler {
             if form.is_filled() {
                 info!(call_id = %event.call_id, form = %form.context_value(), "Form completed");
 
+                let mut completed = FormCompleted::new(&event.call_id, form.clone());
                 event.state = CallState::Idle;
+                dispatcher.dispatch(&mut completed);
             } else if event.action == CallAction::Continue {
                 event.backend_context = format!("{} {}", event.backend_context, next_step(form));
             }
@@ -153,6 +156,11 @@ fn fill(form: &mut Form, field: Option<&str>, value: Option<&str>) -> String {
     // Parsed with the field's own kind, so filling it cannot fail.
     match kind.parse(text) {
         Some(parsed) => {
+            // Answering a later field means the caller moved on from the value read back for the
+            // current one, which accepts it.
+            if form.is_ahead(&name) {
+                form.confirm_current();
+            }
             form.fill_field(&name, parsed);
 
             format!("Recorded \"{text}\" for {name}.")

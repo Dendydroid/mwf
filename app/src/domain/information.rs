@@ -32,6 +32,9 @@ impl GetInformationSupported {
                     rate["exchangedate"].as_str().unwrap_or("today")
                 ))
             }
+            // Both are answered by their own machine #2 variant, from the prompt and the form state.
+            GetInformationSupported::CalendarHelp => Ok("Calendar questions are not supported.".to_string()),
+            GetInformationSupported::FormInformation => Ok("The caller asked about the form.".to_string()),
         }
     }
 }

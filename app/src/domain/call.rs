@@ -51,6 +51,17 @@ flat_enum! {
     pub enum GetInformationSupported {
         GetCurrentWeatherInBerlin,
         GetCurrentUAHPerEUR,
+        // Calendar questions, such as the date of next Saturday: answered with a refusal
+        CalendarHelp,
+        // Questions about the form in progress, answered from its state
+        FormInformation,
+    }
+}
+
+impl GetInformationSupported {
+    /// Whether the caller is told this is something the assistant can help with.
+    pub fn is_offered(self) -> bool {
+        !matches!(self, GetInformationSupported::CalendarHelp | GetInformationSupported::FormInformation)
     }
 }
 
@@ -124,6 +135,7 @@ impl CallerIntent {
     pub fn unsupported_backend_context() -> String {
         let supported = Self::supported_requests()
             .iter()
+            .filter(|intent| !matches!(intent, CallerIntent::GetInformation { selected } if !selected.is_offered()))
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
@@ -161,6 +173,8 @@ impl Display for GetInformationSupported {
         write!(f, "{}", match self {
             GetInformationSupported::GetCurrentWeatherInBerlin => "get_current_weather_in_berlin",
             GetInformationSupported::GetCurrentUAHPerEUR => "get_current_uah_per_eur",
+            GetInformationSupported::CalendarHelp => "calendar_help",
+            GetInformationSupported::FormInformation => "form_information",
         })
     }
 }

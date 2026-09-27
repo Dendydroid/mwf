@@ -14,6 +14,8 @@ pub enum FormFieldKind {
     Float,
     Bool,
     Date,
+    // A date kept as the caller said it, e.g. "next saturday", for whoever receives the form to work out
+    SpokenDate,
 }
 
 impl FormFieldKind {
@@ -33,6 +35,19 @@ impl FormFieldKind {
                 _ => None,
             },
             FormFieldKind::Date => Date::parse(text, &Iso8601::DATE).ok().map(FormFieldValue::Date),
+            FormFieldKind::SpokenDate => (!text.is_empty()).then(|| FormFieldValue::SpokenDate(text.to_string())),
+        }
+    }
+
+    /// Whether an answer meant for one kind would pass for the other: any two
+    /// dates, any two numbers, or the same kind.
+    fn is_like(self, other: FormFieldKind) -> bool {
+        use FormFieldKind::*;
+
+        match (self, other) {
+            (Date | SpokenDate, Date | SpokenDate) => true,
+            (UnsignedInteger | Integer | Float, UnsignedInteger | Integer | Float) => true,
+            _ => self == other,
         }
     }
 }
@@ -47,6 +62,7 @@ pub enum FormFieldValue {
     Bool(bool),
     // YYYY-MM-DD
     Date(Date),
+    SpokenDate(String),
 }
 
 impl FormFieldValue {
@@ -58,6 +74,7 @@ impl FormFieldValue {
             FormFieldValue::Float(_) => FormFieldKind::Float,
             FormFieldValue::Bool(_) => FormFieldKind::Bool,
             FormFieldValue::Date(_) => FormFieldKind::Date,
+            FormFieldValue::SpokenDate(_) => FormFieldKind::SpokenDate,
         }
     }
 }
@@ -71,6 +88,7 @@ impl Display for FormFieldValue {
             FormFieldValue::Float(n) => write!(f, "{n}"),
             FormFieldValue::Bool(b) => write!(f, "{b}"),
             FormFieldValue::Date(d) => write!(f, "{d}"),
+            FormFieldValue::SpokenDate(s) => f.write_str(s),
         }
     }
 }
@@ -112,7 +130,20 @@ impl Form {
         }
     }
 
+    /// Adds the next step. Two steps next to each other must not take the same
+    /// kind of value: an answer meant for one also fits the other, so the caller
+    /// or the intent matcher can put it in the wrong field, e.g. a corrected date
+    /// of birth taken for the appointment date that is asked for right after it.
     pub fn field(mut self, name: &str, description: &str, kind: FormFieldKind) -> Self {
+        if let Some(previous) = self.fields.last() {
+            assert!(
+                !previous.kind.is_like(kind),
+                "{:?} form: `{}` and `{name}` are next to each other and take the same kind of value",
+                self.kind,
+                previous.name,
+            );
+        }
+
         self.fields.push(FormField {
             name: name.to_string(),
             description: description.to_string(),
@@ -140,6 +171,14 @@ impl Form {
 
     pub fn is_filled(&self) -> bool {
         self.current_field().is_none()
+    }
+
+    /// Whether the field named `name` comes after the current one.
+    pub fn is_ahead(&self, name: &str) -> bool {
+        let current = self.fields.iter().position(|field| field.state != StepState::Completed);
+        let target = self.fields.iter().position(|field| field.name == name);
+
+        matches!((current, target), (Some(current), Some(target)) if target > current)
     }
 
     /// Sets a field's value, which the caller then has to confirm. A completed
@@ -215,8 +254,21 @@ impl FormSupported {
             FormSupported::DoctorAppointment => Form::new(self)
                 .field("patient_name", "Full name of the patient", FormFieldKind::String)
                 .field("date_of_birth", "Patient's date of birth", FormFieldKind::Date)
-                .field("appointment_date", "Preferred date of the appointment", FormFieldKind::Date)
-                .field("reason", "Reason for the visit", FormFieldKind::String),
+                .field("reason", "Reason for the visit", FormFieldKind::String)
+                .field("appointment_date", "Preferred date of the appointment", FormFieldKind::SpokenDate),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Form::field` asserts that no two neighbouring steps take the same kind of value.
+    #[test]
+    fn every_form_builds() {
+        for form in FormSupported::ALL {
+            form.build();
         }
     }
 }

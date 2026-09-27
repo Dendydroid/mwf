@@ -25,15 +25,17 @@ pub struct AppState {
 impl AppState {
     pub async fn new(settings: AppSettings) -> Self {
         let (cache, session) = Factory::create_cache_and_session(&settings).await;
+        let http_client = Client::new();
+        let event_dispatcher = events(&settings, &http_client);
 
         Self {
             db: Database::<Postgres>::new(&settings).await,
             cache,
             session,
             llm: VllmClient::new(&settings),
-            http_client: Client::new(),
+            http_client,
             settings,
-            event_dispatcher: events(),
+            event_dispatcher,
             call_locks: CallLocks::default(),
         }
     }

@@ -25,8 +25,8 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// `context` is added to the session's own context (initial context, form
-    /// state), and wins where both have the same key.
+    /// `context` is added after the session's own context (initial context,
+    /// form state), and wins where both have the same key.
     pub async fn query<T>(
         &self,
         llm: &VllmClient,
@@ -37,8 +37,18 @@ impl Machine {
     where
         T: OutputFormat + Default + JsonSchema + DeserializeOwned,
     {
-        let mut full_context = call_session.context();
-        full_context.extend(context.iter().map(|(key, value)| (key.clone(), value.clone())));
+        // Each part sorted, so the same context always renders the same prompt. The turn's own
+        // context (`backend_context`) goes last, next to the utterance: the model follows it
+        // better there than before the long <form_state>.
+        let mut session_context: Vec<_> = call_session
+            .context()
+            .into_iter()
+            .filter(|(key, _)| !context.contains_key(key))
+            .collect();
+        session_context.sort();
+        let mut turn_context: Vec<_> = context.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+        turn_context.sort();
+        let full_context: Vec<_> = session_context.into_iter().chain(turn_context).collect();
 
         let system = self
             .render_system_prompt::<T>(&full_context, call_session.get_conversation())
@@ -66,7 +76,7 @@ impl Machine {
     /// it comes from the caller or a backend and must not be able to close a tag.
     fn render_system_prompt<T>(
         &self,
-        context: &HashMap<String, String>,
+        context: &[(String, String)],
         conversation: &[CallTurn],
     ) -> io::Result<String>
     where
@@ -125,12 +135,8 @@ impl Machine {
             }
 
             if !context.is_empty() {
-                // Sorted, so the same context always renders the same prompt.
-                let mut entries: Vec<_> = context.iter().collect();
-                entries.sort();
-
                 w.create_element("context").write_inner_content(|w| {
-                    for (key, value) in entries {
+                    for (key, value) in context {
                         w.create_element(key.as_str()).write_text_content(escaped(value))?;
                     }
 
@@ -282,9 +288,10 @@ struct ExtractedValue(Option<String>);
 impl ValueSchema for ExtractedValue {
     fn valid_value_description(&self) -> &'static str {
         "The value the caller gave for that field. Set it only when the caller gave one, otherwise leave \
-        `form_field_value` out. Write dates as YYYY-MM-DD, resolving relative \
-        dates such as \"next Tuesday\" against `current_time` in <context>, numbers as digits, yes and no \
-        as true and false, and text as the caller said it"
+        `form_field_value` out. For a field of kind `date` write YYYY-MM-DD. For a field of kind \
+        `spoken_date` write the caller's words in English and lowercase, such as \"next saturday\" or \
+        \"tomorrow evening\", without working the date out. Write numbers as digits, yes and no as true and false, \
+        and text as the caller said it"
     }
 }
 
@@ -317,12 +324,14 @@ impl ExtractedIntent {
         CallerIntent::from_label(&self.caller_intent.0)
     }
 
+    /// The model tends to write `""` rather than leave the key out, so that counts as left out.
     pub fn form_field(&self) -> Option<&str> {
-        self.form_field.0.as_deref()
+        self.form_field.0.as_deref().filter(|name| !name.is_empty())
     }
 
+    /// Same as [`Self::form_field`].
     pub fn form_field_value(&self) -> Option<&str> {
-        self.form_field_value.0.as_deref()
+        self.form_field_value.0.as_deref().filter(|value| !value.is_empty())
     }
 }
 
@@ -363,6 +372,11 @@ impl Machine {
                 "A value the caller points to instead of saying it, such as \"the same as before\", is \
                 `refer_to_context_for_form_field_value`, with the value resolved from <conversation_history>",
                 "A request unrelated to the form in progress is classified on its own, as if there were no form",
+                "A greeting or small talk is `unsupported`",
+                "A question about the calendar, such as which date next Saturday is, is \
+                `get_information[calendar_help]`",
+                "A question about the form or the values the caller gave, such as \"what name did you record\" \
+                or \"did you book it\", is `get_information[form_information]`",
                 "`repeat` when the caller did not hear or understand the last answer, `end_call` when they say \
                 goodbye or answer that they need nothing else, `transfer_to_human` when they ask for a person, \
                 an operator or an agent",
@@ -424,6 +438,50 @@ impl Machine {
                 "When there is no <form_state> and you delivered information or a form was completed or \
                 cancelled, ask whether the caller needs anything else",
                 "Say forms, fields and information in plain words, never as their snake_case names",
+                "No markdown, lists, special characters or emojis: the reply is read out by a speech \
+                synthesizer",
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
+
+    /// Machine #2 for `get_information[calendar_help]`: turns a calendar question
+    /// down. The regular one answers it anyway, with a made-up date.
+    pub fn calendar_refuser() -> Self {
+        Self {
+            role: "You are the voice of a phone assistant. The caller asked about dates or the calendar, which \
+                you cannot help with. Say you are sorry that you cannot help with dates, then follow the next step \
+                in <backend_context>."
+                .to_string(),
+            rules: [
+                "Reply in the language given by <language> in <context>",
+                "Never name a date, a day of the week or a number of days, even when the caller asks for one",
+                "Never ask more than one question in a reply",
+                "No markdown, lists, special characters or emojis: the reply is read out by a speech \
+                synthesizer",
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
+
+    /// Machine #2 for `get_information[form_information]`: answers the caller's
+    /// question about the form, with the same output.
+    pub fn form_informant() -> Self {
+        Self {
+            role: "You are the voice of a phone assistant. Answer the caller's question in <utterance> about \
+                the form they are filling in, from <form_state> in <context>, as natural speech."
+                .to_string(),
+            rules: [
+                "Reply in the language given by <language> in <context>",
+                "Answer only from the fields of <form_state>: a field without a value has not been given yet, \
+                and a field that is not `completed` has not been confirmed yet",
+                "When there is no <form_state>, say that no form is in progress",
+                "The form is only sent once every field is confirmed, so never say it is booked or done before",
+                "After the answer, follow the next step in <backend_context>",
+                "Never ask more than one question in a reply",
+                "Say forms, fields and values in plain words, never as their snake_case names",
                 "No markdown, lists, special characters or emojis: the reply is read out by a speech \
                 synthesizer",
             ]

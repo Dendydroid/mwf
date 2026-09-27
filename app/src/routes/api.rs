@@ -1,5 +1,5 @@
 use crate::app::AppState;
-use crate::domain::call::{CallAction, CallerIntent};
+use crate::domain::call::{CallAction, CallerIntent, GetInformationSupported};
 use crate::domain::call_session::{CallSession, CallTurn, Transcript};
 use crate::domain::machine::{ExtractedIntent, FormulatedResponse, Machine};
 use crate::error::ApiError;
@@ -184,7 +184,17 @@ async fn handle_assistant_request(
                 (LANGUAGE_CONTEXT_KEY.to_string(), language.clone()),
             ]);
 
-            match Machine::response_formulator()
+            let machine = match intent {
+                CallerIntent::GetInformation { selected: GetInformationSupported::FormInformation } => {
+                    Machine::form_informant()
+                }
+                CallerIntent::GetInformation { selected: GetInformationSupported::CalendarHelp } => {
+                    Machine::calendar_refuser()
+                }
+                _ => Machine::response_formulator(),
+            };
+
+            match machine
                 .query::<FormulatedResponse>(&state.llm, utterance, &context, &session)
                 .await
             {

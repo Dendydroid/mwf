@@ -73,6 +73,8 @@ pub struct AppSettings {
     /// host, but a bare `cargo run` on a dev machine has no business creating a
     /// log directory nobody asked for.
     log_dir: Option<String>,
+    /// Where completed forms are POSTed (`FORM_SUBMIT_URL`). Unset or empty sends nothing.
+    form_submit_url: Option<String>,
     pub cache_settings: CacheSettings,
     pub database_settings: DatabaseSettings,
     pub llm_settings: LlmSettings,
@@ -125,6 +127,12 @@ impl AppSettings {
             .as_deref()
             .map(str::trim)
             .filter(|dir| !dir.is_empty())
+    }
+    pub fn form_submit_url(&self) -> Option<&str> {
+        self.form_submit_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
     }
     pub fn llm_api_key(&self) -> Option<&str> {
         self.llm_api_key
