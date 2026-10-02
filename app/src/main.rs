@@ -1,5 +1,6 @@
 mod app;
 mod cache;
+mod classifier;
 mod db;
 mod domain;
 mod error;

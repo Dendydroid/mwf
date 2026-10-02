@@ -12,11 +12,11 @@ use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use tracing::info;
 use crate::domain::call::CallerIntent;
 use crate::domain::call_session::{CallSession, CallTurn};
-use crate::vllm::{VllmClient, VllmError};
+use crate::vllm::{Answer, VllmClient, VllmError};
 
 pub struct Machine {
     role: String,
@@ -64,11 +64,15 @@ impl Machine {
 
         info!(call_id, output, "Machine prompt\n{system}\n{user}");
 
-        let content = llm.query(&system, &user).await?;
+        let answer = llm.query(&system, &user, output, &json_schema::<T>()).await?;
 
-        info!(call_id, output, content = content.as_str(), "Machine answered");
+        info!(call_id, output, content = answer.content.as_str(), "Machine answered");
 
-        serde_json::from_str(&content).map_err(|source| VllmError::Malformed { source, content })
+        let mut parsed: T = serde_json::from_str(&answer.content)
+            .map_err(|source| VllmError::Malformed { source, content: answer.content.clone() })?;
+        parsed.read_answer(&answer);
+
+        Ok(parsed)
     }
 
     /// `role` and `rules` are written verbatim, so they can refer to other
@@ -167,12 +171,40 @@ fn verbatim(text: &str) -> BytesText<'_> {
 
 /// Each output field with its JSON type, e.g. `{"detected_language": "string"}`.
 fn json_output_format<T: JsonSchema>() -> String {
-    let schema = SchemaSettings::default()
-        .with(|s| s.inline_subschemas = true)
-        .into_generator()
-        .into_root_schema_for::<T>();
+    format!("{:#}", Value::Object(field_types::<T>()))
+}
 
-    let format: Map<String, Value> = schema
+/// The schema vLLM holds the answer to: the output's fields and no others, no empty
+/// strings, and only the allowed values of a field that has them.
+fn json_schema<T: OutputFormat + Default + JsonSchema>() -> Value {
+    let output = T::default();
+    let schemas: HashMap<_, _> = output.iter_schemas().collect();
+
+    let properties: Map<String, Value> = field_types::<T>()
+        .into_iter()
+        .map(|(name, kind)| {
+            let mut property = json!({ "type": kind });
+            if kind == "string" {
+                property["minLength"] = json!(1);
+            }
+            if let Some(schema) = schemas.get(name.as_str()).filter(|schema| schema.uses_strict_allowed_values()) {
+                property["enum"] = schema.allowed_values().iter().map(AllowedValue::to_json).collect();
+            }
+            (name, property)
+        })
+        .collect();
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": root_schema::<T>().get("required").cloned().unwrap_or_else(|| json!([])),
+        "additionalProperties": false,
+    })
+}
+
+/// Each field's JSON type, in struct order.
+fn field_types<T: JsonSchema>() -> Map<String, Value> {
+    root_schema::<T>()
         .get("properties")
         .and_then(Value::as_object)
         .into_iter()
@@ -191,9 +223,15 @@ fn json_output_format<T: JsonSchema>() -> String {
             };
             (name.clone(), kind)
         })
-        .collect();
+        .collect()
+}
 
-    format!("{:#}", Value::Object(format))
+fn root_schema<T: JsonSchema>() -> Value {
+    SchemaSettings::default()
+        .with(|s| s.inline_subschemas = true)
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .to_value()
 }
 
 pub enum AllowedValue {
@@ -214,6 +252,17 @@ impl Display for AllowedValue {
     }
 }
 
+impl AllowedValue {
+    fn to_json(&self) -> Value {
+        match self {
+            AllowedValue::PositiveNumber(n) => json!(n),
+            AllowedValue::Number(n) => json!(n),
+            AllowedValue::String(s) => json!(s),
+            AllowedValue::Bool(b) => json!(b),
+        }
+    }
+}
+
 pub trait ValueSchema {
     fn allowed_values(&self) -> Vec<AllowedValue> {
         vec![]
@@ -229,6 +278,9 @@ pub trait ValueSchema {
 pub trait OutputFormat {
     /// Each field's JSON key with its schema.
     fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_>;
+
+    /// Called once the answer is parsed, for what else it tells, such as how sure the model was.
+    fn read_answer(&mut self, _answer: &Answer) {}
 }
 
 
@@ -304,9 +356,36 @@ pub struct ExtractedIntent {
     form_field: FormFieldName,
     #[serde(default)]
     form_field_value: ExtractedValue,
+    // How sure the matcher was of `caller_intent`, 0 to 1. Not part of the answer.
+    #[serde(skip)]
+    confidence: Option<f64>,
 }
 
 impl ExtractedIntent {
+    /// For an intent that did not come from the LLM.
+    pub fn new(
+        reasoning: String,
+        language: String,
+        intent: CallerIntent,
+        form_value: Option<(String, String)>,
+        confidence: f64,
+    ) -> Self {
+        let (form_field, form_field_value) = form_value.unzip();
+
+        Self {
+            machine_reasoning: Reasoning(reasoning),
+            detected_language: DetectedLanguage(language),
+            caller_intent: IntendedAction(intent.to_string()),
+            form_field: FormFieldName(form_field),
+            form_field_value: ExtractedValue(form_field_value),
+            confidence: Some(confidence),
+        }
+    }
+
+    pub fn confidence(&self) -> Option<f64> {
+        self.confidence
+    }
+
     pub fn reasoning(&self) -> &str {
         &self.machine_reasoning.0
     }
@@ -344,6 +423,10 @@ impl OutputFormat for ExtractedIntent {
             ("form_field", &self.form_field as &dyn ValueSchema),
             ("form_field_value", &self.form_field_value as &dyn ValueSchema),
         ].into_iter())
+    }
+
+    fn read_answer(&mut self, answer: &Answer) {
+        self.confidence = answer.probability_of("caller_intent");
     }
 }
 

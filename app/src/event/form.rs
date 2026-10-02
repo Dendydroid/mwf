@@ -48,6 +48,9 @@ impl EventHandler<FormCompleted> for FormSubmitter {
             "completed_at": Local::now().to_rfc3339(),
             "form": event.form,
         });
+
+        info!("Form was submitted!: {}", payload);
+
         let request = self.http.post(url).timeout(TIMEOUT).json(&payload);
 
         tokio::spawn(async move {

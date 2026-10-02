@@ -1,11 +1,13 @@
 use crate::app::AppState;
 use crate::domain::call::{CallAction, CallerIntent, GetInformationSupported};
 use crate::domain::call_session::{CallSession, CallTurn, Transcript};
+use crate::domain::intent_classifier;
 use crate::domain::machine::{ExtractedIntent, FormulatedResponse, Machine};
 use crate::error::ApiError;
 use crate::event::caller_intent::IntentExtracted;
 use crate::routes::call_session_middleware::call_session_middleware;
 use crate::session::UserSession;
+use crate::settings::IntentMatcher;
 use axum::extract::{Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::Html;
@@ -99,6 +101,8 @@ struct AssistantRequestPayload {
 struct AssistantResponse {
     answer: String,
     selected_function: String,
+    // How sure machine #1 was of `selected_function`, 0 to 1
+    confidence: Option<f64>,
     language_detected: String,
     action: CallAction,
     reasoning: String,
@@ -133,9 +137,14 @@ async fn handle_assistant_request(
     );
 
     // 1. Machine #1: what does the caller want?
-    let extracted: ExtractedIntent = Machine::intent_matcher()
-        .query(&state.llm, utterance, &HashMap::new(), &session)
-        .await?;
+    let extracted: ExtractedIntent = match state.settings.intent_matcher() {
+        IntentMatcher::Llm => {
+            Machine::intent_matcher()
+                .query(&state.llm, utterance, &HashMap::new(), &session)
+                .await?
+        }
+        IntentMatcher::Classifier => intent_classifier::match_intent(&state.classifier, utterance, &session).await?,
+    };
 
     let intent = extracted.intent().unwrap_or_else(|| {
         warn!(call_id, label = extracted.intent_label(), "Unknown intent, treating it as unsupported");
@@ -224,11 +233,19 @@ async fn handle_assistant_request(
         llm_transcript: transcript(&answer),
     });
 
-    info!(call_id, intent = %intent, action = ?event.action, answer, "Answered assistant request");
+    info!(
+        call_id,
+        intent = %intent,
+        confidence = extracted.confidence(),
+        action = ?event.action,
+        answer,
+        "Answered assistant request"
+    );
 
     Ok(Json(AssistantResponse {
         answer,
         selected_function: intent.to_string(),
+        confidence: extracted.confidence(),
         language_detected: language,
         action: event.action,
         reasoning: extracted.reasoning().to_string(),

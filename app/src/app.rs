@@ -1,4 +1,5 @@
 use crate::cache::Cache;
+use crate::classifier::ClassifierClient;
 use crate::db::Database;
 use crate::domain::call_session::CallLocks;
 use crate::event::event_bus::Dispatcher;
@@ -16,6 +17,7 @@ pub struct AppState {
     pub cache: Cache,
     pub session: SessionStore,
     pub llm: VllmClient,
+    pub classifier: ClassifierClient,
     pub http_client: Client,
     pub settings: AppSettings,
     pub event_dispatcher: Dispatcher,
@@ -33,6 +35,7 @@ impl AppState {
             cache,
             session,
             llm: VllmClient::new(&settings),
+            classifier: ClassifierClient::new(&settings),
             http_client,
             settings,
             event_dispatcher,

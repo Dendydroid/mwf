@@ -80,6 +80,31 @@ services:
       # First boot downloads and loads the weights, which can take a while
       start_period: 600s
 
+  # ── Classifier (machine #1 without an LLM, on the CPU) ─────────────────────
+  # Always started; the app uses it only with INTENT_MATCHER=classifier.
+  classifier:
+    build:
+      context: ./docker/classifier
+      dockerfile: Dockerfile
+    image: ai-assistant-classifier:latest
+    restart: unless-stopped
+    environment:
+      CLASSIFIER_MODEL: ${CLASSIFIER_MODEL:-}
+      CLASSIFIER_LANGUAGES: ${CLASSIFIER_LANGUAGES:-}
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "${CLASSIFIER_PORT:-8090}:8090"
+    volumes:
+      # The same weights cache as vLLM's
+      - ${LLM_CACHE_DIR:-./models}:/root/.cache/huggingface
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # First boot downloads the model
+      start_period: 300s
+
   # ── Application ───────────────────────────────────────────────────────────
   app:
     build:
@@ -93,6 +118,8 @@ services:
         condition: service_healthy
       vllm:
         condition: service_healthy
+      classifier:
+        condition: service_healthy
     environment:
       APP_ENV: ${APP_ENV}
       APP_PORT: ${APP_PORT}
@@ -104,6 +131,8 @@ services:
       LLM_URL: http://vllm:${LLM_PORT}/v1
       LLM_MODEL: ${LLM_MODEL}
       LLM_API_KEY: ${LLM_API_KEY:-}
+      INTENT_MATCHER: ${INTENT_MATCHER:-llm}
+      CLASSIFIER_URL: http://classifier:8090
       # Where the app writes its rolling log files *inside* the container. The
       # volume below maps that to ./logs on the host, so the logs survive the
       # container being rebuilt or removed - which `docker logs` alone does not.

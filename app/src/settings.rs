@@ -35,6 +35,16 @@ pub struct LlmSettings {
     pub max_tokens: u32,
 }
 
+/// Which machine #1 answers (`INTENT_MATCHER`). Machine #2 is always the LLM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentMatcher {
+    /// vLLM, with the intent matcher's prompt
+    Llm,
+    /// The classifier service in `docker/classifier`, on the CPU
+    Classifier,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AppSettings {
     #[serde(rename = "app_env")]
@@ -66,6 +76,9 @@ pub struct AppSettings {
     /// turn. So swapping prompts by editing the file is instant, and swapping
     /// them by pointing this somewhere else needs a restart.
     llm_system_prompt_file: String,
+    intent_matcher: IntentMatcher,
+    /// Base URL of the classifier service (`CLASSIFIER_URL`), for `IntentMatcher::Classifier`.
+    classifier_url: String,
     /// Directory for rolling log files (`LOG_DIR`). Unset means stdout only.
     ///
     /// Optional rather than defaulted on purpose: in the container it is
@@ -121,6 +134,12 @@ impl AppSettings {
     }
     pub fn llm_system_prompt_file(&self) -> &str {
         &self.llm_system_prompt_file
+    }
+    pub fn intent_matcher(&self) -> IntentMatcher {
+        self.intent_matcher
+    }
+    pub fn classifier_url(&self) -> &str {
+        &self.classifier_url
     }
     pub fn log_dir(&self) -> Option<&str> {
         self.log_dir

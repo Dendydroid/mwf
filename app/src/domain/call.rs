@@ -131,7 +131,8 @@ impl CallerIntent {
     }
 
     /// Backend context for the response formulator on `Unsupported`: a polite
-    /// refusal that lists what the caller can ask for instead.
+    /// refusal that lists what the caller can ask for instead, then returns to
+    /// whatever was pending.
     pub fn unsupported_backend_context() -> String {
         let supported = Self::supported_requests()
             .iter()
@@ -142,7 +143,8 @@ impl CallerIntent {
 
         format!(
             "The caller asked for something that is not supported. Politely say so \
-            and list, in plain words, what you can help with instead: {supported}"
+            and list, in plain words, what you can help with instead: {supported}. If something was \
+            still pending, such as a form being filled in or a question you asked, politely ask it again."
         )
     }
 }

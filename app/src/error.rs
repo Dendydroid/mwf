@@ -10,6 +10,7 @@
 //! Every failure serialises as `{"error": "..."}`, so the mimic client can
 //! handle all of them in one branch instead of guessing at the body per status.
 
+use crate::classifier::ClassifierError;
 use crate::vllm::VllmError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -28,6 +29,10 @@ pub enum ApiError {
     /// system prompt asks for. `#[from]` lets handlers use `?` on `classify`.
     #[error("inference failed: {0}")]
     Inference(#[from] VllmError),
+
+    /// The classifier service, when it is machine #1, could not be reached.
+    #[error("classification failed: {0}")]
+    Classification(#[from] ClassifierError),
 }
 
 #[derive(Serialize)]
@@ -46,14 +51,15 @@ impl IntoResponse for ApiError {
             // A timeout is its own status. It is not "the assistant is down" -
             // the next turn will very likely succeed - and a caller that retries
             // on 504 but gives up on 502 is behaving correctly in both cases.
-            ApiError::Inference(VllmError::Timeout { .. }) => (
+            ApiError::Inference(VllmError::Timeout { .. })
+            | ApiError::Classification(ClassifierError::Timeout) => (
                 StatusCode::GATEWAY_TIMEOUT,
                 "the assistant took too long to answer".to_string(),
             ),
             // 502 rather than 500: the failing component is a service behind
             // this one, and that distinction is the whole point when the thing
             // that is down is a GPU box that takes ten minutes to come back.
-            ApiError::Inference(_) => (
+            ApiError::Inference(_) | ApiError::Classification(_) => (
                 StatusCode::BAD_GATEWAY,
                 "the assistant is unavailable right now".to_string(),
             ),

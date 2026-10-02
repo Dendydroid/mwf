@@ -8,6 +8,10 @@ llm_model = "Qwen/Qwen2.5-7B-Instruct-AWQ"
 # cargo, /app/ in the container. The file is re-read every turn, so editing the
 # prompt needs no restart - see app/prompts/README.md.
 llm_system_prompt_file = "prompts/system_prompt.txt"
+# Machine #1 (INTENT_MATCHER): "llm" asks vLLM, "classifier" asks the GLiNER2 service in
+# docker/classifier (CLASSIFIER_URL), which runs on the CPU. Machine #2 is always the LLM.
+intent_matcher = "llm"
+classifier_url = "http://localhost:8090"
 
 [app_settings]
 

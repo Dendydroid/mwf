@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI Phone Assistant: What You Can Say</title>
+<!--
+  Source of docs/capabilities-reference.pdf. Print it with Chrome (no JavaScript involved):
+  chrome --headless --no-pdf-header-footer --print-to-pdf=docs/capabilities-reference.pdf docs/capabilities-reference.html
+
+  Written for whoever tests a call, so it names no intents or settings. The behaviour behind each
+  row is in app/src/event/caller_intent.rs, app/src/domain/form.rs and the machine rules in
+  app/src/domain/machine.rs.
+-->
+<style>
+  @page {
+    size: A4;
+    margin: 14mm 15mm 12mm 15mm;
+    @bottom-left {
+      content: "AI Phone Assistant · What you can say during a call";
+      font: 7.5pt "Segoe UI", Arial, sans-serif;
+      color: #8a8f99;
+    }
+    @bottom-right {
+      content: "Checked October 2026";
+      font: 7.5pt "Segoe UI", Arial, sans-serif;
+      color: #8a8f99;
+    }
+  }
+
+  :root {
+    --ink: #1d2129;
+    --muted: #5d6573;
+    --rule: #d9dde4;
+    --accent: #1f5fae;
+    --tint: #eef3fa;
+    --anytime: #1f5fae;
+    --booking: #1f7a4d;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: #fff;
+    font: 8.9pt/1.4 "Segoe UI", Arial, sans-serif;
+  }
+
+  header { margin-bottom: 8pt; padding-bottom: 6pt; border-bottom: 1.5pt solid var(--accent); }
+  .kicker { margin: 0; font-size: 7.6pt; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  h1 { margin: 2pt 0 3pt; font-size: 17pt; font-weight: 600; line-height: 1.15; }
+  .lead { margin: 0; color: var(--muted); text-align: justify; hyphens: auto; }
+
+  h2 { margin: 9pt 0 3pt; font-size: 10.2pt; font-weight: 600; color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 8pt; line-height: 1.34; }
+  th {
+    padding: 3pt 5pt;
+    border-bottom: 1pt solid var(--ink);
+    text-align: left;
+    font-size: 7.2pt;
+    font-weight: 600;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  td { padding: 3pt 5pt; border-bottom: .5pt solid var(--rule); vertical-align: top; }
+  td.what { font-weight: 600; }
+  td.say { font-style: italic; color: #3b4250; }
+
+  tr.group td {
+    padding: 7pt 5pt 2pt;
+    border-bottom: 1pt solid currentColor;
+    font-size: 7.6pt;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  tr.group td span { font-weight: 400; letter-spacing: 0; text-transform: none; }
+  tr.group.anytime td { color: var(--anytime); }
+  tr.group.booking td { color: var(--booking); }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12pt; align-items: start; margin-top: 2pt; }
+
+  ol, ul { margin: 0; padding-left: 13pt; }
+  li { margin: 0 0 2.4pt; }
+  li::marker { color: var(--accent); }
+  li span { color: var(--muted); }
+  li b { font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="kicker">Quick reference for testing</p>
+  <h1>What you can say during a call</h1>
+  <p class="lead">
+    Everything you can try in a test call, and what you should hear back. Speak English, German, Russian
+    or Ukrainian. The assistant answers in the language of your last sentence. Anything in the first
+    section works at any moment, even mid-booking.
+  </p>
+</header>
+
+<table>
+  <colgroup>
+    <col style="width:22%">
+    <col style="width:32%">
+    <col style="width:46%">
+  </colgroup>
+  <thead>
+    <tr><th>You want to</th><th>Try saying</th><th>You should hear</th></tr>
+  </thead>
+  <tbody>
+    <tr class="group anytime"><td colspan="3">At any time during the call</td></tr>
+    <tr>
+      <td class="what">Hear the weather</td>
+      <td class="say">“What's the weather in Berlin?”<br>“Какая погода в Берлине?”</td>
+      <td>The current weather in Berlin, in plain words.</td>
+    </tr>
+    <tr>
+      <td class="what">Know the euro rate</td>
+      <td class="say">“How many hryvnias is one euro?”<br>“Wie steht der Euro zur Hrywnja?”</td>
+      <td>Today's official euro to hryvnia rate.</td>
+    </tr>
+    <tr>
+      <td class="what">Ask about a date</td>
+      <td class="say">“What date is next Saturday?”</td>
+      <td>An apology: it can't help with dates. It never names one.</td>
+    </tr>
+    <tr>
+      <td class="what">Hear the last answer again</td>
+      <td class="say">“Sorry, can you say that again?”</td>
+      <td>The last answer, word for word.</td>
+    </tr>
+    <tr>
+      <td class="what">Switch language</td>
+      <td class="say">“Und wie ist das Wetter in Berlin?”</td>
+      <td>The answer in German. Every answer follows the language you just spoke.</td>
+    </tr>
+    <tr>
+      <td class="what">Ask for something it can't do</td>
+      <td class="say">“Hello!” · “Weather in Paris?” · “Dollar rate?”</td>
+      <td>It can't help with that, followed by what it can do: the weather, the euro rate and booking a doctor.</td>
+    </tr>
+    <tr>
+      <td class="what">Answer “Anything else?”</td>
+      <td class="say">“Yes.” · “No, that's all.”</td>
+      <td>Yes: it asks what you need. No: it says goodbye.</td>
+    </tr>
+    <tr>
+      <td class="what">Talk to a person</td>
+      <td class="say">“Can I speak to an operator?”</td>
+      <td>It says it is putting you through. The test page then hangs up.</td>
+    </tr>
+    <tr>
+      <td class="what">End the call</td>
+      <td class="say">“That's all, thank you. Bye.”</td>
+      <td>A goodbye, and the call ends. An unfinished booking is dropped.</td>
+    </tr>
+
+    <tr class="group booking"><td colspan="3">Booking a doctor's appointment <span>· four details, each read back to you</span></td></tr>
+    <tr>
+      <td class="what">Start a booking</td>
+      <td class="say">“I'd like to see a doctor.”</td>
+      <td>The first question: the patient's full name.</td>
+    </tr>
+    <tr>
+      <td class="what">Answer the question</td>
+      <td class="say">“Anna Weber.” · “The 3rd of May 1990.”</td>
+      <td>Your answer read back: “Is the name Anna Weber?” An impossible date is asked for again.</td>
+    </tr>
+    <tr>
+      <td class="what">Say it's right</td>
+      <td class="say">“Yes, that's right.”</td>
+      <td>The next question.</td>
+    </tr>
+    <tr>
+      <td class="what">Say it's wrong</td>
+      <td class="say">“No, that's wrong.”</td>
+      <td>The same question again. After three noes for one detail, it offers you a person.</td>
+    </tr>
+    <tr>
+      <td class="what">Correct it right away</td>
+      <td class="say">“No, it's Anna Becker.”</td>
+      <td>The new value, read back.</td>
+    </tr>
+    <tr>
+      <td class="what">Fix an earlier answer</td>
+      <td class="say">“Actually, my birthday is the 4th of May.”</td>
+      <td>Only that detail is changed and read back. Everything else stays, and the booking carries on.</td>
+    </tr>
+    <tr>
+      <td class="what">Skip the “yes”</td>
+      <td class="say">Asked to confirm the date of birth: “It's for a headache.”</td>
+      <td>The date is taken as right, and your reason is read back.</td>
+    </tr>
+    <tr>
+      <td class="what">Point to what you said</td>
+      <td class="say">“Same name as I told you before.”</td>
+      <td>The value from earlier in the call, read back.</td>
+    </tr>
+    <tr>
+      <td class="what">Hear a detail again</td>
+      <td class="say">“Can you repeat my name?”<br>“What date of birth did you note?”</td>
+      <td>What it has recorded so far, then the booking question you were on.</td>
+    </tr>
+    <tr>
+      <td class="what">Check the booking</td>
+      <td class="say">“Is my appointment booked?”</td>
+      <td>Not yet, until every detail is confirmed. With no booking open, it says there is none.</td>
+    </tr>
+    <tr>
+      <td class="what">Ask something else</td>
+      <td class="say">“Wait, what's the weather in Berlin?”</td>
+      <td>The answer, then the booking question again. Nothing is lost.</td>
+    </tr>
+    <tr>
+      <td class="what">Cancel</td>
+      <td class="say">“Forget it, cancel the appointment.”</td>
+      <td>The booking is dropped, and it asks if you need anything else.</td>
+    </tr>
+    <tr>
+      <td class="what">Finish</td>
+      <td class="say">“Yes” to the last detail.</td>
+      <td>The appointment is booked, then “Anything else?”</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="cols">
+  <div>
+    <h2>The booking asks, in this order</h2>
+    <ol>
+      <li>Full name of the patient</li>
+      <li>Date of birth <span>· any spoken date, such as “3 May 1990”</span></li>
+      <li>Reason for the visit</li>
+      <li>Preferred appointment date <span>· kept as you say it, such as “next Friday”</span></li>
+    </ol>
+  </div>
+  <div>
+    <h2>Testing tips</h2>
+    <ul>
+      <li>Open <b>/mimic-client</b> in Chrome and press <b>Start call</b>, or type and press Enter.</li>
+      <li>Each page load is a new call. Reload to start over.</li>
+      <li>Under each answer, the badges show what the assistant understood.</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>
