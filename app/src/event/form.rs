@@ -33,7 +33,7 @@ pub struct FormSubmitter {
 }
 
 impl EventHandler<FormCompleted> for FormSubmitter {
-    fn handle(&self, event: &mut FormCompleted, _: &Dispatcher) {
+    async fn handle(&self, event: &mut FormCompleted, _: &Dispatcher) {
         let call_id = event.call_id.clone();
 
         let Some(url) = self.url.clone() else {

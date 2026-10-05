@@ -23,7 +23,7 @@ impl Event for CallSessionLoaded {}
 pub struct InitialContextHandler;
 
 impl EventHandler<CallSessionLoaded> for InitialContextHandler {
-    fn handle(&self, event: &mut CallSessionLoaded, _: &Dispatcher) {
+    async fn handle(&self, event: &mut CallSessionLoaded, _: &Dispatcher) {
         event.initial_context.insert(
             "current_time".to_string(),
             Local::now().format("%A, %Y-%m-%d %H:%M %:z").to_string(),

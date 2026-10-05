@@ -19,39 +19,28 @@ use crate::domain::call_session::{CallSession, CallTurn};
 use crate::vllm::{Answer, VllmClient, VllmError};
 
 pub struct Machine {
-    role: String,
+    pub(crate) role: String,
 
-    rules: Vec<String>,
+    pub(crate) rules: Vec<String>,
 }
 
 impl Machine {
-    /// `context` is added after the session's own context (initial context,
-    /// form state), and wins where both have the same key.
+    /// `<context>` is the session's own context (initial context, form state).
     pub async fn query<T>(
         &self,
         llm: &VllmClient,
         input: &str,
-        context: &HashMap<String, String>,
         call_session: &CallSession,
     ) -> Result<T, VllmError>
     where
         T: OutputFormat + Default + JsonSchema + DeserializeOwned,
     {
-        // Each part sorted, so the same context always renders the same prompt. The turn's own
-        // context (`backend_context`) goes last, next to the utterance: the model follows it
-        // better there than before the long <form_state>.
-        let mut session_context: Vec<_> = call_session
-            .context()
-            .into_iter()
-            .filter(|(key, _)| !context.contains_key(key))
-            .collect();
-        session_context.sort();
-        let mut turn_context: Vec<_> = context.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
-        turn_context.sort();
-        let full_context: Vec<_> = session_context.into_iter().chain(turn_context).collect();
+        // Sorted, so the same context always renders the same prompt.
+        let mut context: Vec<_> = call_session.context().into_iter().collect();
+        context.sort();
 
         let system = self
-            .render_system_prompt::<T>(&full_context, call_session.get_conversation())
+            .render_system_prompt::<T>(&context, call_session.get_conversation())
             .expect("Could not render the system prompt");
         let user = render_xml(|w| {
             w.create_element("utterance").write_text_content(escaped(input))?;
@@ -113,8 +102,20 @@ impl Machine {
                     for (name, schema) in fields.iter().filter(|(_, schema)| schema.uses_strict_allowed_values()) {
                         w.create_element(*name).write_inner_content(|w| {
                             for value in schema.allowed_values() {
-                                w.create_element("allowed_value")
-                                    .write_text_content(escaped(&value.to_string()))?;
+                                let Some(description) = value.description() else {
+                                    w.create_element("allowed_value")
+                                        .write_text_content(escaped(&value.to_string()))?;
+
+                                    continue;
+                                };
+
+                                // Written verbatim, like a rule: it can refer to other sections by tag.
+                                w.create_element("allowed_value").write_inner_content(|w| {
+                                    w.create_element("value").write_text_content(escaped(&value.to_string()))?;
+                                    w.create_element("description").write_text_content(verbatim(description))?;
+
+                                    Ok(())
+                                })?;
                             }
 
                             Ok(())
@@ -239,6 +240,13 @@ pub enum AllowedValue {
     Number(i64),
     String(String),
     Bool(bool),
+    // A string value with how to match it, see `AllowedValue::described`.
+    Described(String, &'static str),
+}
+
+/// A value that tells the model how to match it, such as an intent.
+pub trait Described {
+    fn description(&self) -> &'static str;
 }
 
 impl Display for AllowedValue {
@@ -248,13 +256,26 @@ impl Display for AllowedValue {
             AllowedValue::Number(n) => write!(f, "{n}"),
             AllowedValue::String(s) => f.write_str(s),
             AllowedValue::Bool(b) => write!(f, "{b}"),
+            AllowedValue::Described(s, _) => f.write_str(s),
         }
     }
 }
 
 impl AllowedValue {
+    pub fn described<T: Display + Described>(value: &T) -> Self {
+        AllowedValue::Described(value.to_string(), value.description())
+    }
+
+    fn description(&self) -> Option<&'static str> {
+        match self {
+            AllowedValue::Described(_, description) => Some(description),
+            _ => None,
+        }
+    }
+
     fn to_json(&self) -> Value {
         match self {
+            AllowedValue::Described(s, _) => json!(s),
             AllowedValue::PositiveNumber(n) => json!(n),
             AllowedValue::Number(n) => json!(n),
             AllowedValue::String(s) => json!(s),
@@ -288,147 +309,6 @@ pub trait OutputFormat {
 ----------------------------------------------------------------------------------------------------
 */
 
-// Output for machine #1 intent matcher
-
-#[derive(JsonSchema, Deserialize, Default)]
-struct Reasoning(String);
-
-impl ValueSchema for Reasoning {
-    fn valid_value_description(&self) -> &'static str {
-        "A brief 1-sentence analysis based on rules and context"
-    }
-}
-
-#[derive(JsonSchema, Deserialize, Default)]
-struct DetectedLanguage(String);
-
-impl ValueSchema for DetectedLanguage {
-    fn valid_value_description(&self) -> &'static str {
-        "ISO 639-1 two-letter code"
-    }
-}
-
-#[derive(JsonSchema, Deserialize, Default)]
-struct IntendedAction(String);
-
-impl ValueSchema for IntendedAction {
-    fn allowed_values(&self) -> Vec<AllowedValue> {
-        CallerIntent::all()
-            .iter()
-            .map(|i| AllowedValue::String(String::from(format!("{}", i))))
-            .collect()
-    }
-
-    fn valid_value_description(&self) -> &'static str {
-        "Caller's intended action, or `unsupported` when none of the other values fits"
-    }
-}
-
-#[derive(JsonSchema, Deserialize, Default)]
-struct FormFieldName(Option<String>);
-
-impl ValueSchema for FormFieldName {
-    fn valid_value_description(&self) -> &'static str {
-        "Name of the field in <form_state> that `form_field_value` is for. Set it only when the utterance gives \
-        a form value, otherwise leave `form_field` out"
-    }
-}
-
-#[derive(JsonSchema, Deserialize, Default)]
-struct ExtractedValue(Option<String>);
-
-impl ValueSchema for ExtractedValue {
-    fn valid_value_description(&self) -> &'static str {
-        "The value the caller gave for that field. Set it only when the caller gave one, otherwise leave \
-        `form_field_value` out. For a field of kind `date` write YYYY-MM-DD. For a field of kind \
-        `spoken_date` write the caller's words in English and lowercase, such as \"next saturday\" or \
-        \"tomorrow evening\", without working the date out. Write numbers as digits, yes and no as true and false, \
-        and text as the caller said it"
-    }
-}
-
-#[derive(JsonSchema, Deserialize, Default)]
-pub struct ExtractedIntent {
-    machine_reasoning: Reasoning,
-    detected_language: DetectedLanguage,
-    caller_intent: IntendedAction,
-    #[serde(default)]
-    form_field: FormFieldName,
-    #[serde(default)]
-    form_field_value: ExtractedValue,
-    // How sure the matcher was of `caller_intent`, 0 to 1. Not part of the answer.
-    #[serde(skip)]
-    confidence: Option<f64>,
-}
-
-impl ExtractedIntent {
-    /// For an intent that did not come from the LLM.
-    pub fn new(
-        reasoning: String,
-        language: String,
-        intent: CallerIntent,
-        form_value: Option<(String, String)>,
-        confidence: f64,
-    ) -> Self {
-        let (form_field, form_field_value) = form_value.unzip();
-
-        Self {
-            machine_reasoning: Reasoning(reasoning),
-            detected_language: DetectedLanguage(language),
-            caller_intent: IntendedAction(intent.to_string()),
-            form_field: FormFieldName(form_field),
-            form_field_value: ExtractedValue(form_field_value),
-            confidence: Some(confidence),
-        }
-    }
-
-    pub fn confidence(&self) -> Option<f64> {
-        self.confidence
-    }
-
-    pub fn reasoning(&self) -> &str {
-        &self.machine_reasoning.0
-    }
-
-    pub fn language(&self) -> &str {
-        &self.detected_language.0
-    }
-
-    pub fn intent_label(&self) -> &str {
-        &self.caller_intent.0
-    }
-
-    /// `None` when the model answered with a label that is not an intent.
-    pub fn intent(&self) -> Option<CallerIntent> {
-        CallerIntent::from_label(&self.caller_intent.0)
-    }
-
-    /// The model tends to write `""` rather than leave the key out, so that counts as left out.
-    pub fn form_field(&self) -> Option<&str> {
-        self.form_field.0.as_deref().filter(|name| !name.is_empty())
-    }
-
-    /// Same as [`Self::form_field`].
-    pub fn form_field_value(&self) -> Option<&str> {
-        self.form_field_value.0.as_deref().filter(|value| !value.is_empty())
-    }
-}
-
-impl OutputFormat for ExtractedIntent {
-    fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_> {
-        Box::new(vec![
-            ("machine_reasoning", &self.machine_reasoning as &dyn ValueSchema),
-            ("detected_language", &self.detected_language as &dyn ValueSchema),
-            ("caller_intent", &self.caller_intent as &dyn ValueSchema),
-            ("form_field", &self.form_field as &dyn ValueSchema),
-            ("form_field_value", &self.form_field_value as &dyn ValueSchema),
-        ].into_iter())
-    }
-
-    fn read_answer(&mut self, answer: &Answer) {
-        self.confidence = answer.probability_of("caller_intent");
-    }
-}
 
 impl Machine {
     /// Machine #1: what the caller wants, and which form value they gave.

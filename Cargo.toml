@@ -32,6 +32,7 @@ rand = "0.8"
 hex = "0.4"
 reqwest = { version = "0.13.5", features = ["json"] }
 quick-xml = { version = "0.42", features = ["serialize"] }
+lingua = { version = "1.8", default-features = false, features = ["english", "german", "russian", "ukrainian"] }
 
 # Dev dependencies
 tokio-test = { version = "1", package = "tokio", features = ["test-util"] }

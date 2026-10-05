@@ -1,3 +1,4 @@
+use std::fmt::format;
 use config::{Config, Environment};
 use serde::Deserialize;
 
@@ -13,6 +14,11 @@ pub struct DatabaseSettings {
 pub struct CacheSettings {
     pub session_ttl_days: u32,
     pub call_session_ttl_seconds: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CallSettings {
+    pub default_language: String,
 }
 
 /// Knobs for the inference calls themselves. The *where* and the *which model*
@@ -33,16 +39,6 @@ pub struct LlmSettings {
     /// Ceiling on generated tokens per turn - the other half of not timing out.
     /// See `ChatCompletionRequest::max_tokens`.
     pub max_tokens: u32,
-}
-
-/// Which machine #1 answers (`INTENT_MATCHER`). Machine #2 is always the LLM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntentMatcher {
-    /// vLLM, with the intent matcher's prompt
-    Llm,
-    /// The classifier service in `docker/classifier`, on the CPU
-    Classifier,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,9 +72,6 @@ pub struct AppSettings {
     /// turn. So swapping prompts by editing the file is instant, and swapping
     /// them by pointing this somewhere else needs a restart.
     llm_system_prompt_file: String,
-    intent_matcher: IntentMatcher,
-    /// Base URL of the classifier service (`CLASSIFIER_URL`), for `IntentMatcher::Classifier`.
-    classifier_url: String,
     /// Directory for rolling log files (`LOG_DIR`). Unset means stdout only.
     ///
     /// Optional rather than defaulted on purpose: in the container it is
@@ -91,6 +84,13 @@ pub struct AppSettings {
     pub cache_settings: CacheSettings,
     pub database_settings: DatabaseSettings,
     pub llm_settings: LlmSettings,
+    pub call_settings: CallSettings,
+}
+
+const PROMPT_LOOP_FLAG: &str = "--prompt-loop";
+
+pub fn is_prompt_loop_mode() -> bool {
+    std::env::args().any(|arg| arg == PROMPT_LOOP_FLAG)
 }
 
 impl AppSettings {
@@ -100,8 +100,13 @@ impl AppSettings {
             false => dotenvy::dotenv().expect(".env does not exist"),
         };
 
+        if is_prompt_loop_mode() {
+            dotenvy::from_filename_override(".env.stdin").expect(".env.stdin does not exist");
+        }
+
+        let prefix_stdin = if is_prompt_loop_mode() { "app/" } else { "" };
         let settings = Config::builder()
-            .add_source(config::File::with_name("config/settings.toml"))
+            .add_source(config::File::with_name(&format!("{}config/settings.toml", prefix_stdin)))
             .add_source(Environment::default())
             .build()
             .expect("Application config build failed");
@@ -134,12 +139,6 @@ impl AppSettings {
     }
     pub fn llm_system_prompt_file(&self) -> &str {
         &self.llm_system_prompt_file
-    }
-    pub fn intent_matcher(&self) -> IntentMatcher {
-        self.intent_matcher
-    }
-    pub fn classifier_url(&self) -> &str {
-        &self.classifier_url
     }
     pub fn log_dir(&self) -> Option<&str> {
         self.log_dir

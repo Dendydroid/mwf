@@ -33,11 +33,11 @@ pub async fn call_session_middleware(
     // Held until the session is saved, so the call's next turn loads what this one saved.
     let _turn = state.call_locks.lock(&call_id).await;
 
-    let mut call_session = CallSession::from_or_new(&call_id, state.cache.clone()).await;
+    let mut call_session = CallSession::from_or_new(&call_id, state.cache.clone(), &state.settings).await;
 
     let mut loaded = CallSessionLoaded::new(&call_id);
-    state.event_dispatcher.dispatch(&mut loaded);
-    call_session.initial_context = loaded.initial_context;
+    state.event_dispatcher.dispatch(&mut loaded).await;
+    call_session.call_turn_context = loaded.initial_context;
 
     let call_session = Arc::new(RwLock::new(call_session));
 
@@ -47,7 +47,7 @@ pub async fn call_session_middleware(
 
     // Saved on every request, not only on change, so the TTL counts from the
     // last turn of the call rather than the first.
-    if !call_session.write().await.save_slots(ttl_seconds).await {
+    if !call_session.write().await.save(ttl_seconds).await {
         error!("Could not save call session {call_id}");
     }
 

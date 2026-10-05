@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use crate::domain::machine::Described;
 
 /// Declares a fieldless enum together with an `ALL` slice of its variants.
 /// Because both come from the same variant list, `ALL` can never go stale.
@@ -166,6 +167,43 @@ impl Display for CallerIntent {
             CallerIntent::Repeat => f.write_str("repeat"),
             CallerIntent::EndCall => f.write_str("end_call"),
             CallerIntent::TransferToHuman => f.write_str("transfer_to_human"),
+        }
+    }
+}
+
+impl Described for CallerIntent {
+    fn description(&self) -> &'static str {
+        use GetInformationSupported::*;
+
+        match self {
+            CallerIntent::Unsupported => "None of the other values fits. Also a greeting, small talk, or a \
+                request that is similar to a supported one but not the same, such as another city, another \
+                currency or another kind of booking",
+            CallerIntent::GetInformation { selected: GetCurrentWeatherInBerlin } => "The caller asks about \
+                the current weather in Berlin",
+            CallerIntent::GetInformation { selected: GetCurrentUAHPerEUR } => "The caller asks for the \
+                current exchange rate of the Ukrainian hryvnia to the euro",
+            CallerIntent::GetInformation { selected: CalendarHelp } => "A question about the calendar, such \
+                as which date next Saturday is",
+            CallerIntent::GetInformation { selected: FormInformation } => "A question about the form or the \
+                values the caller gave, such as \"what name did you record\" or \"did you book it\"",
+            CallerIntent::StartForm { form: FormSupported::DoctorAppointment } => "The caller either explicitly states that he wants to book \
+                a doctor's appointment or describes the symptoms which also most probably means he wants a doctor's appointment",
+            CallerIntent::ProvideFormFieldValue => "An answer to the `current_field` of <form_state> when it \
+                is `queued`, including a plain yes or no when its kind is `bool`",
+            CallerIntent::CancelForm => "The caller wants to stop filling in the form in progress",
+            CallerIntent::ReferToContextForFormFieldValue => "A value the caller points to instead of saying \
+                it, such as \"the same as before\"",
+            CallerIntent::ConfirmYes => "Agreement when the `current_field` of <form_state> is \
+                `awaiting_confirmation`",
+            CallerIntent::ConfirmNo => "A plain denial when the `current_field` of <form_state> is \
+                `awaiting_confirmation`",
+            CallerIntent::CorrectFormFieldValue => "A new value for a field that is already `completed`, or \
+                a denial that also gives the right value when the `current_field` of <form_state> is \
+                `awaiting_confirmation`",
+            CallerIntent::Repeat => "The caller did not hear or understand the last answer",
+            CallerIntent::EndCall => "The caller says goodbye or answers that they need nothing else",
+            CallerIntent::TransferToHuman => "The caller asks for a person, an operator or an agent",
         }
     }
 }

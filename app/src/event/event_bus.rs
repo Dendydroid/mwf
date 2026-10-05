@@ -1,5 +1,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 pub trait Event: Send + 'static {
@@ -14,10 +16,12 @@ pub trait EventHandler<E: Event>: Send + Sync + 'static {
         0
     }
 
-    fn handle(&self, event: &mut E, dispatcher: &Dispatcher);
+    fn handle(&self, event: &mut E, dispatcher: &Dispatcher) -> impl Future<Output = ()> + Send;
 }
 
-type BoxedHandler<E> = Box<dyn Fn(&mut E, &Dispatcher) + Send + Sync>;
+type HandlerFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+type BoxedHandler<E> = Box<dyn for<'a> Fn(&'a mut E, &'a Dispatcher) -> HandlerFuture<'a> + Send + Sync>;
 
 type HandlerList<E> = Vec<(i32, BoxedHandler<E>)>;
 
@@ -35,7 +39,12 @@ impl DispatcherBuilder {
         let priority = handler.priority();
         self.push::<E>(
             priority,
-            Box::new(move |event, dispatcher| handler.handle(event, dispatcher)),
+            Box::new(move |event, dispatcher| {
+                // the future outlives this call, so it owns its handler
+                let handler = handler.clone();
+
+                Box::pin(async move { handler.handle(event, dispatcher).await })
+            }),
         )
     }
 
@@ -44,7 +53,14 @@ impl DispatcherBuilder {
         E: Event,
         F: Fn(&mut E, &Dispatcher) + Send + Sync + 'static,
     {
-        self.push::<E>(priority, Box::new(f))
+        self.push::<E>(
+            priority,
+            Box::new(move |event, dispatcher| {
+                f(event, dispatcher);
+
+                Box::pin(async {})
+            }),
+        )
     }
 
     pub fn register<S: Subscriber>(&mut self, s: Arc<S>) -> &mut Self {
@@ -78,7 +94,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn dispatch<E: Event>(&self, event: &mut E) {
+    pub async fn dispatch<E: Event>(&self, event: &mut E) {
         let Some(slot) = self.slots.get(&TypeId::of::<E>()) else {
             return;
         };
@@ -90,7 +106,7 @@ impl Dispatcher {
             if event.is_propagation_stopped() {
                 break;
             }
-            handler(event, self); // handlers may dispatch nested events
+            handler(event, self).await; // handlers may dispatch nested events
         }
     }
 }
@@ -111,7 +127,7 @@ impl OnboardingSubscriber {
 }
 
 impl<E: UserCreatedEvent> EventHandler<E> for OnboardingSubscriber {
-    fn handle(&self, ev: &mut E, _: &Dispatcher) {
+    async fn handle(&self, ev: &mut E, _: &Dispatcher) {
         self.onboard(ev.user_id(), ev.source());
     }
 }
@@ -134,6 +150,6 @@ let dispatcher = b.build();
 
 // --- dispatch ---
 let mut ev = MobileRegistrationEvent { user_id: 42 };
-dispatcher.dispatch(&mut ev);
+dispatcher.dispatch(&mut ev).await;
 
 */

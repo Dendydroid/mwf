@@ -11,20 +11,35 @@ mod session;
 mod settings;
 mod vllm;
 
+#[cfg(test)]
+mod tests;
+
 use crate::app::AppState;
 use crate::settings::AppSettings;
-use crate::vllm::VllmClient;
+use crate::vllm::{Answer, VllmClient};
 use axum::Router;
+use serde::{Deserialize, Serialize};
 use std::any::TypeId;
+use std::collections::HashMap;
 use std::io;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use schemars::JsonSchema;
+use sqlx::types::chrono::Local;
+use tokio::sync::RwLock;
 use tower_http::compression::CompressionLayer;
+use tower_http::CompressionLevel::Default;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::log::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use uuid::Uuid;
+use crate::domain::call_session::{CallSession, CallTurn};
+use crate::domain::machine::{AllowedValue, Machine, OutputFormat, ValueSchema};
+use crate::event::caller_spoke::CallerSpokeEvent;
+use crate::event::context_extracted::HintMap;
 
 const PROMPT_LOOP_FLAG: &str = "--prompt-loop";
 
@@ -64,6 +79,70 @@ fn init_tracing(settings: &AppSettings) -> Option<WorkerGuard> {
     guard
 }
 
+pub fn is_prompt_loop_mode() -> bool {
+    std::env::args().any(|arg| arg == PROMPT_LOOP_FLAG)
+}
+
+
+async fn run_prompt_loop(app_state: Arc<AppState>) -> anyhow::Result<()> {
+    info!("Starting prompt loop mode. Type your input and press Enter. Type 'exit' to quit.");
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    let call_id = &Uuid::new_v4().to_string();
+    loop {
+        print!("> ");
+        stdout.flush()?;
+
+        let mut input = String::new();
+        stdin.read_line(&mut input)?;
+
+        let input = input.trim();
+
+        if input.is_empty() {
+            continue;
+        }
+
+        if input.eq_ignore_ascii_case("exit") {
+            info!("Exiting prompt loop.");
+            break;
+        }
+
+        let mut context = HashMap::new();
+
+        context.insert(
+            "current_time".to_string(),
+            Local::now().format("%A, %Y-%m-%d %H:%M %:z").to_string(),
+        );
+
+        let call_session = Arc::new(
+            RwLock::new(
+                CallSession::from_or_new(call_id, app_state.cache.clone(), &app_state.settings).await
+            )
+        );
+
+        let mut caller_spoke_event = CallerSpokeEvent::new(
+            call_id,
+            input,
+            Arc::clone(&call_session)
+        );
+
+        app_state.event_dispatcher.dispatch(&mut caller_spoke_event).await;
+
+        let actual_response = &call_session.read().await.data.last_spoken_response;
+
+        println!("Response: {}", actual_response);
+    }
+
+    Ok(())
+}
+
+// TODO: add readback trait with description
+
+// TODO: analytics collect calls on a separate endpoint and a separate small LLM I wrote extracts all the context defined in context SCHEMA which can be updated on the fly and that info can be used to build graphs, pie charts and whatever to showcase the problematic areas which can be improved.
+// Also this can be used for training the trainable models on some edge cases. valuable data.
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Settings first, because `LOG_DIR` decides where logging goes and nothing
@@ -84,6 +163,12 @@ async fn main() -> anyhow::Result<()> {
     //     .await?;
 
     info!("Database connected and migrations applied");
+
+    // Check if we should run in prompt loop mode
+    if is_prompt_loop_mode() {
+        info!("Running in prompt loop mode");
+        return run_prompt_loop(state.clone()).await;
+    }
 
     let app = Router::<Arc<AppState>>::new()
         .merge(routes::api::router(state.clone()))

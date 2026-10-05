@@ -46,7 +46,7 @@ impl Event for IntentExtracted {}
 pub struct CallStateHandler;
 
 impl EventHandler<IntentExtracted> for CallStateHandler {
-    fn handle(&self, event: &mut IntentExtracted, dispatcher: &Dispatcher) {
+    async fn handle(&self, event: &mut IntentExtracted, dispatcher: &Dispatcher) {
         event.backend_context = match event.intent {
             CallerIntent::Unsupported => CallerIntent::unsupported_backend_context(),
             CallerIntent::GetInformation { selected } => match &event.information {
@@ -107,7 +107,7 @@ impl EventHandler<IntentExtracted> for CallStateHandler {
 
                 let mut completed = FormCompleted::new(&event.call_id, form.clone());
                 event.state = CallState::Idle;
-                dispatcher.dispatch(&mut completed);
+                dispatcher.dispatch(&mut completed).await;
             } else if event.action == CallAction::Continue {
                 event.backend_context = format!("{} {}", event.backend_context, next_step(form));
             }

@@ -1,5 +1,4 @@
 use crate::cache::Cache;
-use crate::classifier::ClassifierClient;
 use crate::db::Database;
 use crate::domain::call_session::CallLocks;
 use crate::event::event_bus::Dispatcher;
@@ -17,7 +16,6 @@ pub struct AppState {
     pub cache: Cache,
     pub session: SessionStore,
     pub llm: VllmClient,
-    pub classifier: ClassifierClient,
     pub http_client: Client,
     pub settings: AppSettings,
     pub event_dispatcher: Dispatcher,
@@ -28,14 +26,14 @@ impl AppState {
     pub async fn new(settings: AppSettings) -> Self {
         let (cache, session) = Factory::create_cache_and_session(&settings).await;
         let http_client = Client::new();
-        let event_dispatcher = events(&settings, &http_client);
+        let llm = VllmClient::new(&settings);
+        let event_dispatcher = events(&settings, &http_client, &llm);
 
         Self {
             db: Database::<Postgres>::new(&settings).await,
             cache,
             session,
-            llm: VllmClient::new(&settings),
-            classifier: ClassifierClient::new(&settings),
+            llm,
             http_client,
             settings,
             event_dispatcher,
