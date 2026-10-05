@@ -160,8 +160,8 @@ impl Described for CallerIntent {
                 it, such as \"the same as before\"",
             CallerIntent::ConfirmYes => "Agreement when the `current_field` of <form_state> is \
                 `awaiting_confirmation`",
-            CallerIntent::ConfirmNo => "A plain denial when the `current_field` of <form_state> is \
-                `awaiting_confirmation`",
+            CallerIntent::ConfirmNo => "A denial that gives no other value, such as \"no\" or \"that is wrong\", \
+                when the `current_field` of <form_state> is `awaiting_confirmation`",
             CallerIntent::CorrectFormFieldValue => "A new value for a field that is already `completed`, or \
                 a denial that also gives the right value when the `current_field` of <form_state> is \
                 `awaiting_confirmation`",

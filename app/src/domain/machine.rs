@@ -174,7 +174,7 @@ fn json_output_format<T: JsonSchema>() -> String {
 }
 
 /// The schema vLLM holds the answer to: the output's fields and no others, no empty
-/// strings, and only the allowed values of a field that has them.
+/// strings, only the allowed values of a field that has them, and null where a field accepts it.
 fn json_schema<T: OutputFormat + Default + JsonSchema>() -> Value {
     let output = T::default();
     let schemas: HashMap<_, _> = output.iter_schemas().collect();
@@ -188,6 +188,10 @@ fn json_schema<T: OutputFormat + Default + JsonSchema>() -> Value {
             }
             if let Some(schema) = schemas.get(name.as_str()).filter(|schema| schema.uses_strict_allowed_values()) {
                 property["enum"] = schema.allowed_values().iter().map(AllowedValue::to_json).collect();
+            }
+            // Without it the model writes a word such as "null" or "string" for a value it does not have.
+            if schemas.get(name.as_str()).is_some_and(|schema| schema.accepts_null()) {
+                property["type"] = json!([kind, "null"]);
             }
             (name, property)
         })
@@ -289,6 +293,11 @@ pub trait ValueSchema {
 
     fn uses_strict_allowed_values(&self) -> bool {
         !self.allowed_values().is_empty()
+    }
+
+    /// Whether the model may write null when it has no value for the field.
+    fn accepts_null(&self) -> bool {
+        false
     }
 
     fn valid_value_description(&self) -> &'static str;

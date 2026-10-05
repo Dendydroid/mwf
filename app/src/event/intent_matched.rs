@@ -70,6 +70,7 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                 let completed_form = form_intent_context_handler(
                     &form_intent,
                     &form_value,
+                    &event.utterance,
                     &mut session,
                     &self.http_client
                 ).await;
