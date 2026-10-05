@@ -15,6 +15,7 @@ use crate::event::context_extracted::HintMap;
 use crate::settings::AppSettings;
 
 const FORM_STATE_CONTEXT_KEY: &str = "form_state";
+const LANGUAGE_CONTEXT_KEY: &str = "language";
 
 pub struct CallSession {
     cache: Cache,
@@ -37,7 +38,7 @@ pub struct CallData {
 
     pub call_memory: CallMemory,
 
-    pub last_spoken_response: String,
+    pub last_spoken_response: Option<String>,
 }
 
 impl CallData {
@@ -105,15 +106,6 @@ impl CallSession {
         &self.data.call_memory.conversation
     }
 
-    /// What the assistant said last, for repeating it.
-    pub fn last_answer(&self) -> Option<&str> {
-        self.data
-            .call_memory
-            .conversation
-            .last()
-            .map(|turn| turn.llm_transcript.transcript.as_str())
-    }
-
     /// Everything that goes into `<context>` this turn.
     pub fn context(&self) -> HashMap<String, String> {
         let mut context = self.call_turn_context.clone();
@@ -121,6 +113,11 @@ impl CallSession {
         if let CallState::FormInProgress(form) = &self.data.state {
             context.insert(FORM_STATE_CONTEXT_KEY.to_string(), form.context_value());
         }
+
+        context.insert(
+            LANGUAGE_CONTEXT_KEY.to_string(),
+            self.data.language.to_string()
+        );
 
         context
     }

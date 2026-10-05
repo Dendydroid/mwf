@@ -10,7 +10,7 @@ use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use crate::event::form::FormCompleted;
 use tracing::info;
 use tracing::log::error;
-use crate::domain::flow::main_menu_flow::{main_menu_intent_context_handler, ExtractedMainMenuIntent, FormulatedResponse};
+use crate::domain::flow::main_menu_flow::{failed_turn_response, main_menu_intent_context_handler, ExtractedMainMenuIntent, FormulatedResponse};
 use crate::domain::machine::{Machine, OutputFormat, ValueSchema};
 use crate::event::caller_intent::IntentExtracted;
 use crate::event::context_extracted::FlowContext;
@@ -70,14 +70,24 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                         save_last_exchange(&mut session, &event.utterance, &formulated_response.into_spoken_response())
                     }
                     Err(vllm_error) => {
-                        error!("vLLM error extracting main menu context: {:?}", vllm_error);
+                        error!("vLLM error formulating main menu response: {:?}", vllm_error);
 
+                        fail_turn(&mut session, &event.utterance)
                     }
                 }
             },
             IntentMatched::Form => todo!(),
         }
     }
+}
+
+/// For a turn one of the machines failed on: the caller heard nothing of it, so the call is
+/// back in the main menu and they are told to try again.
+pub fn fail_turn(session: &mut CallSession, utterance: &str) {
+    session.data.state = CallState::Idle;
+
+    let apology = failed_turn_response(session.data.language);
+    save_last_exchange(session, utterance, apology);
 }
 
 fn save_last_exchange(session: &mut CallSession, utterance: &str, spoken_response: &str) {
@@ -98,5 +108,5 @@ fn save_last_exchange(session: &mut CallSession, utterance: &str, spoken_respons
         llm_transcript: transcript(spoken_response),
     });
 
-    session.data.last_spoken_response = spoken_response.to_string();
+    session.data.last_spoken_response = Some(spoken_response.to_string());
 }

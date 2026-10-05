@@ -11,7 +11,7 @@ use tracing::log::error;
 use crate::domain::flow::main_menu_flow::ExtractedMainMenuIntent;
 use crate::domain::machine::{Machine, OutputFormat, ValueSchema};
 use crate::event::caller_intent::IntentExtracted;
-use crate::event::intent_matched::{IntentMatched, IntentMatchedEvent};
+use crate::event::intent_matched::{fail_turn, IntentMatched, IntentMatchedEvent};
 use crate::vllm::VllmClient;
 
 #[derive(JsonSchema, Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
@@ -116,8 +116,9 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
                         dispatcher.dispatch(&mut intent_matched_event).await;
                     }
                     Err(vllm_error) => {
-                        error!("vLLM error extracting main menu context: {:?}", vllm_error);
+                        error!("vLLM error matching main menu intent: {:?}", vllm_error);
 
+                        fail_turn(&mut *event.call_session.write().await, &event.utterance);
                     }
                 }
             },

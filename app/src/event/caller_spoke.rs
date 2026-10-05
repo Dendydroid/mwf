@@ -10,6 +10,7 @@ use crate::classifier::detect_language;
 use crate::domain::call_session::{CallSession, CallState};
 use crate::domain::machine::Machine;
 use crate::event::context_extracted::{ContextExtractedEvent, FlowContext, HintMap};
+use crate::event::intent_matched::fail_turn;
 use crate::vllm::VllmClient;
 
 pub struct CallerSpokeEvent {
@@ -70,6 +71,8 @@ impl EventHandler<CallerSpokeEvent> for CallerSpokeHandler {
                     }
                     Err(vllm_error) => {
                         error!("vLLM error extracting main menu context: {:?}", vllm_error);
+
+                        fail_turn(&mut session, &event.utterance);
 
                         None
                     }

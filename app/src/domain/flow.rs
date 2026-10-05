@@ -16,7 +16,9 @@ impl ValueSchema for Reasoning {
 pub mod main_menu_flow {
     use reqwest::Client;
     use schemars::JsonSchema;
+    use lingua::Language;
     use serde::Deserialize;
+    use tracing::error;
     use crate::domain::call::{CallAction, CallerIntent, FormSupported, GetInformationSupported};
     use crate::domain::call_session::{CallSession, CallState};
     use crate::domain::flow::Reasoning;
@@ -153,6 +155,7 @@ pub mod main_menu_flow {
                     "Reply in the language given by <language> in <context>",
                     "Only ask one question in reply",
                     "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
+                    "Follow <response_context> instructions when answering and take its content into consideration"
                 ]
                     .map(String::from)
                     .to_vec()
@@ -164,15 +167,19 @@ pub mod main_menu_flow {
         let caller_intent = CallerIntent::from_label(intent.caller_intent())
             .unwrap_or(CallerIntent::Unsupported);
 
-        let has_conversation_just_started = session.data.call_memory.conversation.len() > 0;
+        let has_conversation_history = session.data.call_memory.conversation.len() > 0;
 
         let backend_context = match caller_intent {
-            CallerIntent::GetInformation { selected } => selected
-                .fetch(&http_client).await
-                .unwrap_or("Politely apologize, state that the requested service is unavailable at the moment.".into())
-            ,
+            CallerIntent::GetInformation { selected } => match selected.fetch(&http_client).await {
+                Ok(information) => information,
+                Err(e) => {
+                    error!(call_id = %session.call_id, "Could not fetch {selected}: {e:#}");
+
+                    "Politely apologize, state that the requested service is unavailable at the moment.".into()
+                }
+            },
             CallerIntent::StartForm { form } => start_form(&mut session.data.state, form),
-            CallerIntent::Repeat if !has_conversation_just_started => "The caller asked to hear your last reply from <conversation_history>."
+            CallerIntent::Repeat if has_conversation_history => "The caller asked to hear your last reply from <conversation_history>."
                 .to_string(),
             CallerIntent::EndCall => {
                 "The caller is ending the call. Say a short, friendly goodbye and ask nothing.".to_string()
@@ -214,6 +221,22 @@ pub mod main_menu_flow {
             "response_context".into(),
             backend_context
         );
+    }
+
+    /// What the caller hears when the turn failed on our side. Fixed text, because the machine
+    /// that would phrase it is the one that failed. Lists what `IntendedMainMenuAction` offers.
+    pub fn failed_turn_response(language: Language) -> &'static str {
+        match language {
+            Language::German => "Entschuldigung, bei uns ist ein Fehler aufgetreten, bitte versuchen Sie es noch \
+                einmal. Ich kann Ihnen das aktuelle Wetter in Berlin oder den Wechselkurs von Hrywnja zu Euro \
+                nennen oder einen Arzttermin für Sie buchen.",
+            Language::Russian => "Извините, на нашей стороне произошла ошибка, пожалуйста, попробуйте ещё раз. \
+                Я могу подсказать текущую погоду в Берлине, курс гривны к евро или записать вас на приём к врачу.",
+            Language::Ukrainian => "Вибачте, на нашому боці сталася помилка, будь ласка, спробуйте ще раз. \
+                Я можу підказати поточну погоду в Берліні, курс гривні до євро або записати вас на прийом до лікаря.",
+            _ => "Sorry, an error happened on our side, please try again. I can tell you the current weather in \
+                Berlin, the hryvnia to euro exchange rate, or book a doctor's appointment.",
+        }
     }
 
     fn start_form(state: &mut CallState, form: FormSupported) -> String {

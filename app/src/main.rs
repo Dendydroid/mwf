@@ -32,12 +32,13 @@ use tower_http::compression::CompressionLayer;
 use tower_http::CompressionLevel::Default;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::log::info;
+use tracing::log::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 use crate::domain::call_session::{CallSession, CallTurn};
 use crate::domain::machine::{AllowedValue, Machine, OutputFormat, ValueSchema};
+use crate::event::call_session::CallSessionLoaded;
 use crate::event::caller_spoke::CallerSpokeEvent;
 use crate::event::context_extracted::HintMap;
 
@@ -91,6 +92,7 @@ async fn run_prompt_loop(app_state: Arc<AppState>) -> anyhow::Result<()> {
     let mut stdout = io::stdout();
 
     let call_id = &Uuid::new_v4().to_string();
+    let ttl_seconds = u64::from(app_state.settings.cache_settings.call_session_ttl_seconds);
     loop {
         print!("> ");
         stdout.flush()?;
@@ -109,18 +111,15 @@ async fn run_prompt_loop(app_state: Arc<AppState>) -> anyhow::Result<()> {
             break;
         }
 
-        let mut context = HashMap::new();
-
-        context.insert(
-            "current_time".to_string(),
-            Local::now().format("%A, %Y-%m-%d %H:%M %:z").to_string(),
-        );
-
         let call_session = Arc::new(
             RwLock::new(
                 CallSession::from_or_new(call_id, app_state.cache.clone(), &app_state.settings).await
             )
         );
+
+        let mut session_loaded = CallSessionLoaded::new(&call_id);
+        app_state.event_dispatcher.dispatch(&mut session_loaded).await;
+        call_session.write().await.call_turn_context = session_loaded.initial_context;
 
         let mut caller_spoke_event = CallerSpokeEvent::new(
             call_id,
@@ -130,7 +129,11 @@ async fn run_prompt_loop(app_state: Arc<AppState>) -> anyhow::Result<()> {
 
         app_state.event_dispatcher.dispatch(&mut caller_spoke_event).await;
 
-        let actual_response = &call_session.read().await.data.last_spoken_response;
+        let actual_response = &call_session.read().await.data.last_spoken_response.clone().unwrap();
+
+        if !call_session.write().await.save(ttl_seconds).await {
+            error!("Could not save call session {call_id}");
+        }
 
         println!("Response: {}", actual_response);
     }

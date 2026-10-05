@@ -33,7 +33,7 @@ impl GetInformationSupported {
                 ))
             }
             // Both are answered by their own machine #2 variant, from the prompt and the form state.
-            GetInformationSupported::CalendarHelp => Ok("Calendar questions are not supported.".to_string()),
+            GetInformationSupported::CalendarHelp => Ok("The caller asked about dates or the calendar, which you cannot help with. Say you are sorry that you cannot help with dates".into()),
             GetInformationSupported::FormInformation => Ok("The caller asked about the form.".to_string()),
         }
     }
