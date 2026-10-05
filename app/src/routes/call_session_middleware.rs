@@ -1,7 +1,7 @@
 use crate::app::AppState;
 use crate::domain::call_session::CallSession;
 use crate::error::ApiError;
-use crate::event::call_session::CallSessionLoaded;
+use crate::event::call_session_loaded::CallSessionLoadedEvent;
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -35,7 +35,7 @@ pub async fn call_session_middleware(
 
     let mut call_session = CallSession::from_or_new(&call_id, state.cache.clone(), &state.settings).await;
 
-    let mut loaded = CallSessionLoaded::new(&call_id);
+    let mut loaded = CallSessionLoadedEvent::new(&call_id);
     state.event_dispatcher.dispatch(&mut loaded).await;
     call_session.call_turn_context = loaded.initial_context;
 

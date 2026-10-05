@@ -1,64 +1,13 @@
 use std::sync::Arc;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use crate::domain::call::{CallAction, CallerIntent, FormSupported};
-use crate::domain::call_session::{CallSession, CallState};
-use crate::domain::form::{Form, FormField, FormFieldKind, StepState};
+use crate::domain::call_session::CallSession;
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
-use crate::event::form::FormCompleted;
-use tracing::info;
 use tracing::log::error;
+use crate::domain::flow::{FlowContext, IntentMatched};
+use crate::domain::flow::form_flow::ExtractedFormIntent;
 use crate::domain::flow::main_menu_flow::ExtractedMainMenuIntent;
-use crate::domain::machine::{Machine, OutputFormat, ValueSchema};
-use crate::event::caller_intent::IntentExtracted;
-use crate::event::intent_matched::{fail_turn, IntentMatched, IntentMatchedEvent};
+use crate::domain::machine::Machine;
+use crate::event::intent_matched::IntentMatchedEvent;
 use crate::vllm::VllmClient;
-
-#[derive(JsonSchema, Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
-pub struct HintMap {
-    caller_full_name: Option<String>,
-    patient_full_name: Option<String>,
-    date_of_birth_iso_8601: Option<String>,
-    appointment_spoken_date: Option<String>,
-    appointment_spoken_time: Option<String>,
-}
-
-impl HintMap {
-    /// Takes the values `other` has, and keeps its own where `other` has none.
-    pub fn merge(&mut self, other: HintMap) {
-        self.caller_full_name = other.caller_full_name.or(self.caller_full_name.take());
-        self.patient_full_name = other.patient_full_name.or(self.patient_full_name.take());
-        self.date_of_birth_iso_8601 = other.date_of_birth_iso_8601.or(self.date_of_birth_iso_8601.take());
-        self.appointment_spoken_date = other.appointment_spoken_date.or(self.appointment_spoken_date.take());
-        self.appointment_spoken_time = other.appointment_spoken_time.or(self.appointment_spoken_time.take());
-    }
-}
-
-impl ValueSchema for Option<String> {
-    fn valid_value_description(&self) -> &'static str {
-        "either non-empty string or null type."
-    }
-}
-
-impl OutputFormat for HintMap {
-    fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_> {
-        Box::new(
-            [
-                ("caller_full_name", &self.caller_full_name as &dyn ValueSchema),
-                ("patient_full_name", &self.patient_full_name as &dyn ValueSchema),
-                ("date_of_birth_iso_8601", &self.date_of_birth_iso_8601 as &dyn ValueSchema),
-                ("appointment_spoken_date", &self.appointment_spoken_date as &dyn ValueSchema),
-                ("appointment_spoken_time", &self.appointment_spoken_time as &dyn ValueSchema),
-            ]
-                .into_iter(),
-        )
-    }
-}
-
-pub enum FlowContext {
-    MainMenu(HintMap),
-    Form(Form),
-}
 
 pub struct ContextExtractedEvent {
     pub utterance: String,
@@ -118,11 +67,41 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
                     Err(vllm_error) => {
                         error!("vLLM error matching main menu intent: {:?}", vllm_error);
 
-                        fail_turn(&mut *event.call_session.write().await, &event.utterance);
+                        event.call_session.write().await.fail_turn(&event.utterance);
                     }
                 }
             },
-            FlowContext::Form(_) => todo!(),
+            FlowContext::Form(form_value) => {
+                let matched = Machine::form_intent_matcher()
+                    .query::<ExtractedFormIntent>(
+                        &self.llm,
+                        &event.utterance,
+                        &session,
+                    )
+                    .await;
+
+                // Released first: the next handler locks the session itself.
+                drop(session);
+
+                match matched {
+                    Ok(intent) => {
+                        tracing::log::info!("Extracted FORM INTENT context: {:?}", intent);
+
+                        let mut intent_matched_event = IntentMatchedEvent::new(
+                            &event.utterance,
+                            IntentMatched::Form(intent, form_value.clone()),
+                            event.call_session.clone(),
+                        );
+
+                        dispatcher.dispatch(&mut intent_matched_event).await;
+                    }
+                    Err(vllm_error) => {
+                        error!("vLLM error matching form intent: {:?}", vllm_error);
+
+                        event.call_session.write().await.fail_turn(&event.utterance);
+                    }
+                }
+            },
         }
     }
 }

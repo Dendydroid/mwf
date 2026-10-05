@@ -1,9 +1,8 @@
 use crate::app::AppState;
-use crate::domain::call::{CallAction, CallerIntent, GetInformationSupported};
-use crate::domain::call_session::{CallSession, CallTurn, Transcript};
-use crate::domain::machine::{FormulatedResponse, Machine};
+use crate::domain::call::CallAction;
+use crate::domain::call_session::CallSession;
 use crate::error::ApiError;
-use crate::event::caller_intent::IntentExtracted;
+use crate::event::caller_spoke::CallerSpokeEvent;
 use crate::routes::call_session_middleware::call_session_middleware;
 use crate::session::UserSession;
 use axum::extract::{Query, Request, State};
@@ -13,9 +12,8 @@ use axum::routing::{get, post};
 use axum::{middleware, Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::info;
 
 pub const ASSISTANT_ENDPOINT_PATH: &str = "/assistant/handle-request";
 pub const MIMIC_CLIENT_PATH: &str = "/mimic-client";
@@ -97,149 +95,66 @@ struct AssistantRequestPayload {
 #[derive(Serialize)]
 struct AssistantResponse {
     answer: String,
-    selected_function: String,
-    // How sure machine #1 was of `selected_function`, 0 to 1
+    // `None` when the turn failed before an intent was matched
+    selected_function: Option<String>,
+    // How sure the intent matcher was of `selected_function`, 0 to 1
     confidence: Option<f64>,
     language_detected: String,
     action: CallAction,
-    reasoning: String,
+    reasoning: Option<String>,
 }
-
-const BACKEND_CONTEXT_KEY: &str = "backend_context";
-const LANGUAGE_CONTEXT_KEY: &str = "language";
-const FALLBACK_LANGUAGE: &str = "en";
 
 async fn handle_assistant_request(
     State(state): State<Arc<AppState>>,
     Extension(call_session): Extension<Arc<RwLock<CallSession>>>,
     Json(payload): Json<AssistantRequestPayload>,
 ) -> Result<Json<AssistantResponse>, ApiError> {
-    return Err(ApiError::BadRequest("Soorryy".into()));
-    // let utterance = payload.request_text.trim();
-    //
-    // if utterance.is_empty() {
-    //     return Err(ApiError::BadRequest(
-    //         "request_text must not be empty".to_string(),
-    //     ));
-    // }
-    //
-    // // Turns of one call are handled one at a time by the call lock in `call_session_middleware`.
-    // let mut session = call_session.write().await;
-    // let call_id = session.call_id.clone();
-    //
-    // info!(
-    //     call_id,
-    //     utterance,
-    //     language = payload.language.as_deref().unwrap_or("unspecified"),
-    //     "Handling assistant request"
-    // );
-    //
-    // // 1. Machine #1: what does the caller want?
-    // let extracted: ExtractedIntent = Machine::intent_matcher()
-    //     .query(&state.llm, utterance, &session)
-    //     .await?;
-    //
-    // let intent = extracted.intent().unwrap_or_else(|| {
-    //     warn!(call_id, label = extracted.intent_label(), "Unknown intent, treating it as unsupported");
-    //
-    //     CallerIntent::Unsupported
-    // });
-    // let language = match extracted.language() {
-    //     "" => FALLBACK_LANGUAGE.to_string(),
-    //     language => language.to_string(),
-    // };
-    //
-    // // 2. Facts for `GetInformation`, fetched here because event handlers cannot await.
-    // let information = match intent {
-    //     CallerIntent::GetInformation { selected } => {
-    //         match selected.fetch(&state.http_client).await {
-    //             Ok(information) => Some(information),
-    //             Err(e) => {
-    //                 error!(call_id, "Could not fetch {selected}: {e:#}");
-    //
-    //                 None
-    //             }
-    //         }
-    //     }
-    //     _ => None,
-    // };
-    //
-    // // 3. State changes: forms and steps.
-    // let previous_state = session.data.state.clone();
-    //
-    // let mut event = IntentExtracted::new(&call_id, intent, std::mem::take(&mut session.data.state));
-    // event.form_field = extracted.form_field().map(str::to_string);
-    // event.form_field_value = extracted.form_field_value().map(str::to_string);
-    // event.information = information;
-    //
-    // state.event_dispatcher.dispatch(&mut event).await;
-    //
-    // session.data.state = event.state;
-    //
-    // // 4. Machine #2: the answer. A repeat is the last answer word for word.
-    // let last_answer = session.last_answer().map(str::to_string);
-    // let answer = match (intent, last_answer) {
-    //     (CallerIntent::Repeat, Some(last_answer)) => last_answer,
-    //     _ => {
-    //         // `initial_context` is not saved with the session, so this lasts for the turn only.
-    //         session.initial_context.insert(BACKEND_CONTEXT_KEY.to_string(), event.backend_context);
-    //         session.initial_context.insert(LANGUAGE_CONTEXT_KEY.to_string(), language.clone());
-    //
-    //         let machine = match intent {
-    //             CallerIntent::GetInformation { selected: GetInformationSupported::FormInformation } => {
-    //                 Machine::form_informant()
-    //             }
-    //             CallerIntent::GetInformation { selected: GetInformationSupported::CalendarHelp } => {
-    //                 Machine::calendar_refuser()
-    //             }
-    //             _ => Machine::response_formulator(),
-    //         };
-    //
-    //         match machine
-    //             .query::<FormulatedResponse>(&state.llm, utterance, &session)
-    //             .await
-    //         {
-    //             Ok(formulated) => formulated.into_spoken_response(),
-    //             Err(e) => {
-    //                 // The caller never hears how this turn went, so none of it is kept.
-    //                 session.data.state = previous_state;
-    //
-    //                 return Err(e.into());
-    //             }
-    //         }
-    //     }
-    // };
-    //
-    // // 5. Remember the turn.
-    // let timestamp = SystemTime::now()
-    //     .duration_since(UNIX_EPOCH)
-    //     .map_or(0, |elapsed| elapsed.as_secs());
-    // let transcript = |text: &str| Transcript {
-    //     language: language.clone(),
-    //     transcript: text.to_string(),
-    //     timestamp,
-    // };
-    //
-    // session.save_call_turn(CallTurn {
-    //     caller_transcript: transcript(utterance),
-    //     llm_transcript: transcript(&answer),
-    // });
-    //
-    // info!(
-    //     call_id,
-    //     intent = %intent,
-    //     confidence = extracted.confidence(),
-    //     action = ?event.action,
-    //     answer,
-    //     "Answered assistant request"
-    // );
-    //
-    // Ok(Json(AssistantResponse {
-    //     answer,
-    //     selected_function: intent.to_string(),
-    //     confidence: extracted.confidence(),
-    //     language_detected: language,
-    //     action: event.action,
-    //     reasoning: extracted.reasoning().to_string(),
-    // }))
+    let utterance = payload.request_text.trim();
+
+    if utterance.is_empty() {
+        return Err(ApiError::BadRequest(
+            "request_text must not be empty".to_string(),
+        ));
+    }
+
+    // Turns of one call are handled one at a time by the call lock in `call_session_middleware`.
+    let call_id = call_session.read().await.call_id.clone();
+
+    info!(
+        call_id,
+        utterance,
+        language = payload.language.as_deref().unwrap_or("unspecified"),
+        "Handling assistant request"
+    );
+
+    let mut caller_spoke_event = CallerSpokeEvent::new(
+        &call_id,
+        utterance,
+        Arc::clone(&call_session)
+    );
+
+    state.event_dispatcher.dispatch(&mut caller_spoke_event).await;
+
+    let session = call_session.read().await;
+    let outcome = &session.call_turn_outcome;
+    let selected_function = outcome.caller_intent.map(|intent| intent.to_string());
+    let answer = session.data.last_spoken_response.clone().unwrap_or_default();
+
+    info!(
+        call_id,
+        intent = selected_function,
+        confidence = outcome.confidence,
+        action = ?outcome.action,
+        answer,
+        "Answered assistant request"
+    );
+
+    Ok(Json(AssistantResponse {
+        answer,
+        selected_function,
+        confidence: outcome.confidence,
+        language_detected: session.data.language.iso_code_639_1().to_string(),
+        action: outcome.action,
+        reasoning: outcome.machine_reasoning.clone(),
+    }))
 }

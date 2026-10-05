@@ -1,17 +1,16 @@
 use std::default::Default;
 use crate::cache::{Cache, CacheKey};
+use crate::domain::call::{CallAction, CallerIntent};
+use crate::domain::flow::{form_flow, main_menu_flow};
+use crate::domain::flow::main_menu_flow::HintMap;
 use crate::domain::form::Form;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::OwnedMutexGuard;
-use sqlx::types::chrono;
-use uuid::Uuid;
-use chrono::DateTime;
 use lingua::{IsoCode639_1, Language};
-use sqlx::types::chrono::Local;
-use crate::event::context_extracted::HintMap;
 use crate::settings::AppSettings;
 
 const FORM_STATE_CONTEXT_KEY: &str = "form_state";
@@ -20,10 +19,16 @@ const LANGUAGE_CONTEXT_KEY: &str = "language";
 pub struct CallSession {
     cache: Cache,
 
+    // The state the turn found the call in, for a turn that fails
+    state_before_turn: CallState,
+
     pub call_id: String,
 
     // Current time, service name, phone number, what was done on backend, info from backend
     pub call_turn_context: HashMap<String, String>,
+
+    // What the turn came to besides the spoken response
+    pub call_turn_outcome: CallTurnOutcome,
 
     pub data: CallData,
 }
@@ -77,8 +82,10 @@ impl CallSession {
 
         Self {
             cache,
+            state_before_turn: data.state.clone(),
             call_id: call_id.into(),
             call_turn_context: Default::default(),
+            call_turn_outcome: Default::default(),
             data,
         }
     }
@@ -96,6 +103,40 @@ impl CallSession {
 
     pub fn save_call_turn(&mut self, call_turn: CallTurn) {
         self.data.call_memory.conversation.push(call_turn);
+    }
+
+    pub fn save_last_exchange(&mut self, utterance: &str, spoken_response: &str) {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+
+        let language = self.data.language.iso_code_639_1().to_string();
+
+        let transcript = |text: &str| Transcript {
+            language: language.clone(),
+            transcript: text.to_string(),
+            timestamp,
+        };
+
+        self.save_call_turn(CallTurn {
+            caller_transcript: transcript(utterance),
+            llm_transcript: transcript(spoken_response),
+        });
+
+        self.data.last_spoken_response = Some(spoken_response.to_string());
+    }
+
+    /// For a turn one of the machines failed on: the caller heard nothing of it, so the call is
+    /// back where the turn found it and they are told to try again.
+    pub fn fail_turn(&mut self, utterance: &str) {
+        self.data.state = self.state_before_turn.clone();
+        self.call_turn_outcome.action = CallAction::Continue;
+
+        let apology = match self.data.state {
+            CallState::Idle => main_menu_flow::failed_turn_response(self.data.language),
+            CallState::FormInProgress(..) => form_flow::failed_turn_response(self.data.language),
+        };
+        self.save_last_exchange(utterance, apology);
     }
 
     pub fn merge_filled_hint_map_values(&mut self, hint_map_input: HintMap) {
@@ -139,6 +180,29 @@ pub struct Transcript {
 pub struct CallTurn {
     pub caller_transcript: Transcript,
     pub llm_transcript: Transcript,
+}
+
+/// What a turn came to besides the spoken response, for the side the call comes from.
+/// Not kept between the turns.
+#[derive(Debug, Default)]
+pub struct CallTurnOutcome {
+    // `None` when the turn failed before an intent was matched
+    pub caller_intent: Option<CallerIntent>,
+    pub machine_reasoning: Option<String>,
+    // How sure the intent matcher was of `caller_intent`, 0 to 1
+    pub confidence: Option<f64>,
+    pub action: CallAction,
+}
+
+impl CallTurnOutcome {
+    pub fn matched(caller_intent: CallerIntent, machine_reasoning: &str, confidence: Option<f64>) -> Self {
+        Self {
+            caller_intent: Some(caller_intent),
+            machine_reasoning: Some(machine_reasoning.to_string()),
+            confidence,
+            action: CallAction::Continue,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

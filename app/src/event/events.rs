@@ -1,9 +1,8 @@
-use crate::event::call_session::{CallSessionLoaded, InitialContextHandler};
-use crate::event::caller_intent::{CallStateHandler, IntentExtracted};
+use crate::event::call_session_loaded::{CallSessionLoadedEvent, InitialContextHandler};
 use crate::event::caller_spoke::{CallerSpokeEvent, CallerSpokeHandler};
 use crate::event::context_extracted::{ContextExtractedEvent, ContextExtractedHandler};
 use crate::event::event_bus::{Dispatcher, DispatcherBuilder};
-use crate::event::form::{FormCompleted, FormSubmitter};
+use crate::event::form_completed::{FormCompletedEvent, FormSubmitter};
 use crate::event::intent_matched::{IntentMatchedEvent, IntentMatchedHandler};
 use crate::settings::AppSettings;
 use crate::vllm::VllmClient;
@@ -17,6 +16,8 @@ pub fn events(settings: &AppSettings, http: &Client, llm: &VllmClient) -> Dispat
     let mut b = DispatcherBuilder::default();
     let llm = Arc::new(llm.clone());
 
+    b.add::<CallSessionLoadedEvent, _>(Arc::new(InitialContextHandler));
+
     b.add::<CallerSpokeEvent, _>(Arc::new(CallerSpokeHandler { llm: llm.clone() }));
     b.add::<ContextExtractedEvent, _>(Arc::new(ContextExtractedHandler { llm: llm.clone() }));
     b.add::<IntentMatchedEvent, _>(Arc::new(IntentMatchedHandler {
@@ -24,12 +25,10 @@ pub fn events(settings: &AppSettings, http: &Client, llm: &VllmClient) -> Dispat
         http_client: Arc::new(http.clone()),
     }));
 
-    b.add::<CallSessionLoaded, _>(Arc::new(InitialContextHandler));
-    // b.add::<IntentExtracted, _>(Arc::new(CallStateHandler));
-    // b.add::<FormCompleted, _>(Arc::new(FormSubmitter {
-    //     http: http.clone(),
-    //     url: settings.form_submit_url().map(str::to_string),
-    // }));
+    b.add::<FormCompletedEvent, _>(Arc::new(FormSubmitter {
+        http: http.clone(),
+        url: settings.form_submit_url().map(str::to_string),
+    }));
 
     //b.register(Arc::new(OnboardingSubscriber { repo, mailer }));
 

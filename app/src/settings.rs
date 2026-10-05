@@ -1,4 +1,3 @@
-use std::fmt::format;
 use config::{Config, Environment};
 use serde::Deserialize;
 

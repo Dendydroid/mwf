@@ -1,10 +1,4 @@
-use crate::app::AppState;
-use std::collections::HashMap;
-use std::fmt::{format, Display};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use schemars::JsonSchema;
+use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use crate::domain::machine::Described;
 
@@ -59,13 +53,6 @@ flat_enum! {
     }
 }
 
-impl GetInformationSupported {
-    /// Whether the caller is told this is something the assistant can help with.
-    pub fn is_offered(self) -> bool {
-        !matches!(self, GetInformationSupported::CalendarHelp | GetInformationSupported::FormInformation)
-    }
-}
-
 flat_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
@@ -112,11 +99,6 @@ impl CallerIntent {
         all
     }
 
-    /// Labels of every concrete intent, as rendered by `Display`.
-    pub fn all_labels() -> Vec<String> {
-        Self::all().iter().map(ToString::to_string).collect()
-    }
-
     /// The intent a label names, as rendered by `Display`.
     pub fn from_label(label: &str) -> Option<CallerIntent> {
         Self::all().into_iter().find(|intent| intent.to_string() == label)
@@ -129,24 +111,6 @@ impl CallerIntent {
             .map(|&selected| CallerIntent::GetInformation { selected })
             .chain(FormSupported::ALL.iter().map(|&form| CallerIntent::StartForm { form }))
             .collect()
-    }
-
-    /// Backend context for the response formulator on `Unsupported`: a polite
-    /// refusal that lists what the caller can ask for instead, then returns to
-    /// whatever was pending.
-    pub fn unsupported_backend_context() -> String {
-        let supported = Self::supported_requests()
-            .iter()
-            .filter(|intent| !matches!(intent, CallerIntent::GetInformation { selected } if !selected.is_offered()))
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        format!(
-            "The caller asked for something that is not supported. Politely say so \
-            and list, in plain words, what you can help with instead: {supported}. If something was \
-            still pending, such as a form being filled in or a question you asked, politely ask it again."
-        )
     }
 }
 

@@ -9,12 +9,12 @@ use tracing::{error, info, warn};
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Dispatched once the caller has confirmed every field of a form.
-pub struct FormCompleted {
+pub struct FormCompletedEvent {
     pub call_id: String,
     pub form: Form,
 }
 
-impl FormCompleted {
+impl FormCompletedEvent {
     pub fn new(call_id: &str, form: Form) -> Self {
         Self {
             call_id: call_id.to_string(),
@@ -23,7 +23,7 @@ impl FormCompleted {
     }
 }
 
-impl Event for FormCompleted {}
+impl Event for FormCompletedEvent {}
 
 /// POSTs a completed form to `FORM_SUBMIT_URL` in the background, so the call
 /// goes on without waiting for it.
@@ -32,8 +32,8 @@ pub struct FormSubmitter {
     pub url: Option<String>,
 }
 
-impl EventHandler<FormCompleted> for FormSubmitter {
-    async fn handle(&self, event: &mut FormCompleted, _: &Dispatcher) {
+impl EventHandler<FormCompletedEvent> for FormSubmitter {
+    async fn handle(&self, event: &mut FormCompletedEvent, _: &Dispatcher) {
         let call_id = event.call_id.clone();
 
         let Some(url) = self.url.clone() else {

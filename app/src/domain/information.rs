@@ -32,9 +32,9 @@ impl GetInformationSupported {
                     rate["exchangedate"].as_str().unwrap_or("today")
                 ))
             }
-            // Both are answered by their own machine #2 variant, from the prompt and the form state.
+            // Nothing to fetch for these two: the first is turned down, the second is answered from the form state.
             GetInformationSupported::CalendarHelp => Ok("The caller asked about dates or the calendar, which you cannot help with. Say you are sorry that you cannot help with dates".into()),
-            GetInformationSupported::FormInformation => Ok("The caller asked about the form.".to_string()),
+            GetInformationSupported::FormInformation => Ok("The caller asked about the form. Answer it in one sentence, then say the next step in a sentence of its own.".to_string()),
         }
     }
 }

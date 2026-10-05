@@ -15,34 +15,23 @@ mod vllm;
 mod tests;
 
 use crate::app::AppState;
-use crate::settings::AppSettings;
-use crate::vllm::{Answer, VllmClient};
+use crate::settings::{is_prompt_loop_mode, AppSettings};
 use axum::Router;
-use serde::{Deserialize, Serialize};
-use std::any::TypeId;
-use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use schemars::JsonSchema;
-use sqlx::types::chrono::Local;
 use tokio::sync::RwLock;
 use tower_http::compression::CompressionLayer;
-use tower_http::CompressionLevel::Default;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::log::{error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
-use crate::domain::call_session::{CallSession, CallTurn};
-use crate::domain::machine::{AllowedValue, Machine, OutputFormat, ValueSchema};
-use crate::event::call_session::CallSessionLoaded;
+use crate::domain::call_session::CallSession;
+use crate::event::call_session_loaded::CallSessionLoadedEvent;
 use crate::event::caller_spoke::CallerSpokeEvent;
-use crate::event::context_extracted::HintMap;
-
-const PROMPT_LOOP_FLAG: &str = "--prompt-loop";
 
 const LOG_FILE_PREFIX: &str = "app.log";
 
@@ -80,11 +69,6 @@ fn init_tracing(settings: &AppSettings) -> Option<WorkerGuard> {
     guard
 }
 
-pub fn is_prompt_loop_mode() -> bool {
-    std::env::args().any(|arg| arg == PROMPT_LOOP_FLAG)
-}
-
-
 async fn run_prompt_loop(app_state: Arc<AppState>) -> anyhow::Result<()> {
     info!("Starting prompt loop mode. Type your input and press Enter. Type 'exit' to quit.");
 
@@ -117,7 +101,7 @@ async fn run_prompt_loop(app_state: Arc<AppState>) -> anyhow::Result<()> {
             )
         );
 
-        let mut session_loaded = CallSessionLoaded::new(&call_id);
+        let mut session_loaded = CallSessionLoadedEvent::new(&call_id);
         app_state.event_dispatcher.dispatch(&mut session_loaded).await;
         call_session.write().await.call_turn_context = session_loaded.initial_context;
 

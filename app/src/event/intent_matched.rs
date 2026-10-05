@@ -1,25 +1,14 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use reqwest::Client;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use crate::domain::call::{CallAction, CallerIntent, FormSupported};
-use crate::domain::call_session::{CallSession, CallState, CallTurn, Transcript};
-use crate::domain::form::{FormField, FormFieldKind, StepState};
+use crate::domain::call_session::CallSession;
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
-use crate::event::form::FormCompleted;
-use tracing::info;
+use crate::event::form_completed::FormCompletedEvent;
 use tracing::log::error;
-use crate::domain::flow::main_menu_flow::{failed_turn_response, main_menu_intent_context_handler, ExtractedMainMenuIntent, FormulatedResponse};
-use crate::domain::machine::{Machine, OutputFormat, ValueSchema};
-use crate::event::caller_intent::IntentExtracted;
-use crate::event::context_extracted::FlowContext;
+use crate::domain::flow::{FormulatedResponse, IntentMatched};
+use crate::domain::flow::form_flow::form_intent_context_handler;
+use crate::domain::flow::main_menu_flow::main_menu_intent_context_handler;
+use crate::domain::machine::Machine;
 use crate::vllm::VllmClient;
-
-pub enum IntentMatched {
-    MainMenu(ExtractedMainMenuIntent),
-    Form,
-}
 
 pub struct IntentMatchedEvent {
     pub utterance: String,
@@ -67,46 +56,55 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                     Ok(formulated_response) => {
                         tracing::log::info!("Created FORMULATED_RESPONSE: {:?}", formulated_response);
 
-                        save_last_exchange(&mut session, &event.utterance, &formulated_response.into_spoken_response())
+                        session.save_last_exchange(&event.utterance, &formulated_response.into_spoken_response())
                     }
                     Err(vllm_error) => {
                         error!("vLLM error formulating main menu response: {:?}", vllm_error);
 
-                        fail_turn(&mut session, &event.utterance)
+                        session.fail_turn(&event.utterance)
                     }
                 }
             },
-            IntentMatched::Form => todo!(),
+            IntentMatched::Form(form_intent, form_value) => {
+
+                let completed_form = form_intent_context_handler(
+                    &form_intent,
+                    &form_value,
+                    &mut session,
+                    &self.http_client
+                ).await;
+
+                match Machine::form_response_formulator()
+                    .query::<FormulatedResponse>(
+                        &self.llm,
+                        &event.utterance,
+                        &session,
+                    )
+                    .await {
+                    Ok(formulated_response) => {
+                        tracing::log::info!("Created FORMULATED_RESPONSE: {:?}", formulated_response);
+
+                        session.save_last_exchange(&event.utterance, &formulated_response.into_spoken_response());
+
+                        // Only now, so a form the caller was not told about is not sent either.
+                        if let Some(form) = completed_form {
+                            tracing::log::info!("Completed FORM: {}", form.context_value());
+
+                            let mut form_completed_event = FormCompletedEvent::new(&session.call_id, form);
+
+                            // Released first, like before any other dispatch.
+                            drop(session);
+
+                            dispatcher.dispatch(&mut form_completed_event).await;
+                        }
+                    }
+                    Err(vllm_error) => {
+                        error!("vLLM error formulating form response: {:?}", vllm_error);
+
+                        session.fail_turn(&event.utterance)
+                    }
+                }
+            },
         }
     }
-}
-
-/// For a turn one of the machines failed on: the caller heard nothing of it, so the call is
-/// back in the main menu and they are told to try again.
-pub fn fail_turn(session: &mut CallSession, utterance: &str) {
-    session.data.state = CallState::Idle;
-
-    let apology = failed_turn_response(session.data.language);
-    save_last_exchange(session, utterance, apology);
-}
-
-fn save_last_exchange(session: &mut CallSession, utterance: &str, spoken_response: &str) {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-
-    let language = session.data.language.iso_code_639_1().to_string();
-
-    let transcript = |text: &str| Transcript {
-        language: language.clone(),
-        transcript: text.to_string(),
-        timestamp,
-    };
-
-    session.save_call_turn(CallTurn {
-        caller_transcript: transcript(utterance),
-        llm_transcript: transcript(spoken_response),
-    });
-
-    session.data.last_spoken_response = Some(spoken_response.to_string());
 }

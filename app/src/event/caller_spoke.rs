@@ -1,16 +1,15 @@
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use lingua::{IsoCode639_1, Language};
-use tokio::sync::Mutex;
 use tracing::log::{error, info};
-use crate::cache::Cache;
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use crate::classifier::detect_language;
 use crate::domain::call_session::{CallSession, CallState};
+use crate::domain::flow::FlowContext;
+use crate::domain::flow::form_flow::ExtractedFormValue;
+use crate::domain::flow::main_menu_flow::HintMap;
 use crate::domain::machine::Machine;
-use crate::event::context_extracted::{ContextExtractedEvent, FlowContext, HintMap};
-use crate::event::intent_matched::fail_turn;
+use crate::event::context_extracted::ContextExtractedEvent;
 use crate::vllm::VllmClient;
 
 pub struct CallerSpokeEvent {
@@ -72,7 +71,7 @@ impl EventHandler<CallerSpokeEvent> for CallerSpokeHandler {
                     Err(vllm_error) => {
                         error!("vLLM error extracting main menu context: {:?}", vllm_error);
 
-                        fail_turn(&mut session, &event.utterance);
+                        session.fail_turn(&event.utterance);
 
                         None
                     }
@@ -80,7 +79,26 @@ impl EventHandler<CallerSpokeEvent> for CallerSpokeHandler {
             },
             // During form extraction
             CallState::FormInProgress(..) => {
-                None
+                match Machine::form_context_extractor()
+                    .query::<ExtractedFormValue>(
+                        &self.llm,
+                        &event.utterance,
+                        &session,
+                    )
+                    .await {
+                    Ok(form_value) => {
+                        info!("Extracted FORM context: {:?}", form_value);
+
+                        Some(FlowContext::Form(form_value))
+                    }
+                    Err(vllm_error) => {
+                        error!("vLLM error extracting form context: {:?}", vllm_error);
+
+                        session.fail_turn(&event.utterance);
+
+                        None
+                    }
+                }
             }
         };
 

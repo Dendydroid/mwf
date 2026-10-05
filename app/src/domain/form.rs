@@ -19,7 +19,7 @@ pub enum FormFieldKind {
 }
 
 impl FormFieldKind {
-    /// Reads a value the way the intent matcher is told to write it: digits for
+    /// Reads a value the way the context extractor is told to write it: digits for
     /// numbers, true or false for bool, YYYY-MM-DD for dates.
     pub fn parse(self, text: &str) -> Option<FormFieldValue> {
         let text = text.trim();
@@ -132,7 +132,7 @@ impl Form {
 
     /// Adds the next step. Two steps next to each other must not take the same
     /// kind of value: an answer meant for one also fits the other, so the caller
-    /// or the intent matcher can put it in the wrong field, e.g. a corrected date
+    /// or the context extractor can put it in the wrong field, e.g. a corrected date
     /// of birth taken for the appointment date that is asked for right after it.
     pub fn field(mut self, name: &str, description: &str, kind: FormFieldKind) -> Self {
         if let Some(previous) = self.fields.last() {
