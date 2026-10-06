@@ -102,6 +102,9 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                         if let Some(form) = completed_form {
                             tracing::log::info!("Completed FORM: {}", form.context_value());
 
+                            // The form's callback first: everything that saves comes after it.
+                            form.kind.on_completed(&mut session.data.call_memory.hint_map, &form);
+
                             // Saved with the session, for the main menu to know what the caller has filled out.
                             session.data.call_memory.hint_map.last_filled_out_form = Some(form.clone());
 

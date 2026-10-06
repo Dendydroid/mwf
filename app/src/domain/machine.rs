@@ -51,7 +51,10 @@ impl Machine {
 
         info!(call_id, output, "Machine prompt\n{system}\n{user}");
 
-        let answer = llm.query(&system, &user, output, &json_schema::<T>()).await?;
+        let mut schema = json_schema::<T>();
+        T::fit_schema(&mut schema, call_session);
+
+        let answer = llm.query(&system, &user, output, &schema).await?;
 
         info!(call_id, output, content = answer.content.as_str(), "Machine answered");
 
@@ -306,6 +309,10 @@ pub trait ValueSchema {
 pub trait OutputFormat {
     /// Each field's JSON key with its schema.
     fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_>;
+
+    /// Called with the JSON schema the answer is held to, for what the call's state says the answer
+    /// can be, such as the fields of a form the caller can be answering now.
+    fn fit_schema(_schema: &mut Value, _call_session: &CallSession) {}
 
     /// Called once the answer is parsed, for what else it tells, such as how sure the model was.
     fn read_answer(&mut self, _answer: &Answer) {}

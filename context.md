@@ -1,7 +1,7 @@
 # Context — ai_assistant
 
-**Updated:** 2026-10-06 · **Repo:** `H:\rust\ai_assistant` (branch `master`, last commit `3bb3987 some fine tuning confirm
-yes no with correction`; field validators and the merged appointment hint are uncommitted) · **Stack:** Rust / axum 0.7 ·
+**Updated:** 2026-10-06 · **Repo:** `H:\rust\ai_assistant` (branch `master`, last commit `a631322 before bench`; the
+form completion callback, the two appointment fields and `evals/` are uncommitted) · **Stack:** Rust / axum 0.7 ·
 Redis (call sessions) · Postgres (connected, not used by the assistant) · vLLM serving `Qwen/Qwen2.5-7B-Instruct-AWQ`
 over the OpenAI-compatible API, on an RTX 3080 Ti (12 GB) that also drives the Windows desktop · lingua for the caller's
 language
@@ -59,7 +59,8 @@ POST /assistant/handle-request   header x-call-id: <id>   body {"request_text": 
                                  the flow's intent matcher → ExtractedMainMenuIntent | ExtractedFormIntent
        IntentMatchedHandler      the flow's intent context handler changes the state and writes response_context
                                  the flow's response formulator writes the reply → save_last_exchange
-                                 a completed form → FormCompletedEvent → FormSubmitter POSTs it
+                                 a completed form → its completion callback writes values back into the HintMap
+                                                  → FormCompletedEvent → FormSubmitter POSTs it
      a machine that fails → session.fail_turn(utterance): the state is put back, the caller hears a fixed apology
      → 200 {"answer", "selected_function", "confidence", "language_detected", "action", "reasoning",
             "response_context", "hint_map", "form"}
@@ -75,7 +76,7 @@ the session, dispatches the same two events, saves and prints `Response: …`.
 | path | holds |
 |---|---|
 | `app/src/domain/flow.rs` | At the top what both flows share: `FlowContext`, `IntentMatched`, `Reasoning`, `SpokenResponse`, `FormulatedResponse`. Then `main_menu_flow` (`HintMap`, its machines, `main_menu_intent_context_handler`, `start_form`) and `form_flow` (its machines, `form_intent_context_handler`, `fill` / `confirm` / `reject`, `next_step`) |
-| `app/src/domain/form.rs` | `Form`, `FormField`, `FormFieldKind` (+ `parse`, `is_like`), `FormFieldValue`, `StepState`, the form schemas in `FormSupported::build()`, the validators in `FormSupported::validate()`, `ValidationError` |
+| `app/src/domain/form.rs` | `Form`, `FormField`, `FormFieldKind` (+ `parse`, `is_like`), `FormFieldValue`, `StepState`, the form schemas in `FormSupported::build()`, the validators in `FormSupported::validate()`, `ValidationError`, the completion callbacks in `FormSupported::on_completed()` |
 | `app/src/domain/machine.rs` | `Machine`, `query`, XML prompt rendering, the JSON schema sent to vLLM, `ValueSchema` / `OutputFormat` / `AllowedValue` / `Described` |
 | `app/src/domain/call.rs` | `CallerIntent` (labels, `all`, `from_label`, the descriptions the matchers see), `CallAction`, `GetInformationSupported`, `FormSupported`, `flat_enum!` |
 | `app/src/domain/information.rs` | `GetInformationSupported::fetch` (open-meteo weather, NBU EUR rate, fixed texts for the other two) |
@@ -158,7 +159,9 @@ The user message is `<utterance>…</utterance>`.
   shown with its own type (`"string"`), never as `["string", "null"]`, which the model copied as an array.
 - **The JSON schema** vLLM holds the answer to (`json_schema()`): the output's fields and no others, no empty strings,
   only the allowed values of a strict field, and `null` where `ValueSchema::accepts_null` says so. Only `HintMap` uses
-  that: without it the model wrote the words "null" and "string" as values.
+  that: without it the model wrote the words "null" and "string" as values. `OutputFormat::fit_schema(schema,
+  call_session)` is called with that schema before it is sent, for what the call's state says the answer can be. Only
+  `ExtractedFormValue` uses it (see "Decided in code", 9). It changes the schema only, the prompt says nothing of it.
 - **Logging:** every call logs `Machine prompt` (full system and user XML) and `Machine answered` at `info`.
 - **Adding an output type:** a newtype per field implementing `ValueSchema`, a struct deriving
   `JsonSchema, Deserialize, Default` implementing `OutputFormat::iter_schemas` (keys = serde names).
@@ -191,7 +194,8 @@ The menu: `unsupported`, `get_information[calendar_help]`, `get_information[get_
 ### Hints
 
 `HintMap` is kept for the whole call in `call_memory.hint_map`. Every main menu turn merges what its utterance said
-into it (`merge`: a new value replaces the old one, a missing one keeps it). Form turns do not touch the hints.
+into it (`merge`: a new value replaces the old one, a missing one keeps it). Form turns do not touch the hints, except
+the turn that completes a form (see Form completion).
 
 `last_filled_out_form: Option<Form>` is the one key that is not a hint: the form the caller completed last in the call,
 whichever form it is. `IntentMatchedHandler` sets it once the reply of the completing turn is formulated, next to the
@@ -205,10 +209,12 @@ values given inside the form, so the caller is only asked whether they are right
 |---|---|
 | `patient_name` | `patient_full_name` |
 | `date_of_birth` | `date_of_birth_iso_8601` |
-| `appointment_datetime` | `appointment_spoken_date` and `appointment_spoken_time`, joined with a space. One of them alone is used as it is |
+| `appointment_date` | `appointment_spoken_date` |
+| `appointment_time` | `appointment_spoken_time` |
 
 A hint the field's kind cannot read, or the field's validators refuse, is left out and the field is asked for.
-`caller_full_name` is not used by any form.
+`caller_full_name` is not used by any form. The completion callback of the doctor form writes the same four fields
+back into the same four hints.
 
 ---
 
@@ -216,7 +222,7 @@ A hint the field's kind cannot read, or the field's validators refuse, is left o
 
 | Machine | Output | Job |
 |---|---|---|
-| `Machine::form_context_extractor()` | `ExtractedFormValue`: `form_field` and `form_field_value`, both optional | The one field and value the utterance gives. A date as `YYYY-MM-DD`, a spoken date as the caller's words in English and lowercase. Nothing for a plain yes or no, a question or a request. A value changed only in part is written whole ("no, the tenth" → the full date) |
+| `Machine::form_context_extractor()` | `ExtractedFormValue`: `form_field` and `form_field_value`, both optional | The one field and value the utterance gives. A date as `YYYY-MM-DD`, a spoken date or time as the caller's words for the day or the time of day in English and lowercase. Nothing for a plain yes or no, a question or a request. A value changed only in part is written whole ("no, the tenth" → the full date) |
 | `Machine::form_intent_matcher()` | `ExtractedFormIntent`: `machine_reasoning`, `caller_intent`, plus `confidence` | One intent of the form menu |
 | `Machine::form_response_formulator()` | `FormulatedResponse`: `spoken_response` | The sentence the caller hears, from `<response_context>` |
 
@@ -271,6 +277,11 @@ such field.
    read or a validator refuses it. The read-back value is dropped and the field is asked for again.
 7. **A value a validator refuses is not recorded** (see Validators).
 8. **A completed form is sent only after its reply was formulated**, so a turn that fails sends nothing.
+9. **`form_field` is held to the fields the caller can be answering** (`Form::answerable_fields`, put into the JSON
+   schema as an `enum` by `ExtractedFormValue::fit_schema`). While the current field has no value the caller was
+   asked for it, so the fields after it are not offered; once its value is read back, every field is. Without it
+   the extractor filed a day said with a clock time under the time while the day was asked for ("Morgen um 15 Uhr",
+   "Tomorrow at 3 pm"), and a bare "Morgen" too, so the day was asked for again and the call went in circles.
 
 ### When a turn fails
 
@@ -287,16 +298,19 @@ action to `continue` and saves a fixed apology as the reply, in German, Russian,
 
 - `Form { kind, fields }`, `FormField { name, description, kind, value, state, confirmation_failed_counter }`.
   A field is a step: `Queued` → `AwaitingConfirmation` → `Completed`; the current field is the first not completed.
-- Methods: `field` (builder), `current_field`, `find_field`, `is_filled`, `is_ahead`, `fill_field`, `confirm_current`,
-  `reject_current`, `values_summary`, `context_value` (the `form_state` JSON: `{"form", "current_field", "fields"}`).
+- Methods: `field` (builder), `current_field`, `find_field`, `is_filled`, `is_ahead`, `answerable_fields`,
+  `fill_field`, `confirm_current`, `reject_current`, `values_summary`, `context_value` (the `form_state` JSON:
+  `{"form", "current_field", "fields"}`).
 - Kinds and `parse`: `string` (non-empty), `unsigned_integer`, `integer`, `float` (comma = decimal point), `bool`
-  (true/yes, false/no), `date` (ISO `YYYY-MM-DD`, `time` crate), `spoken_date` (non-empty text kept as said, for the
-  receiving project to work out). Values serialize externally tagged, e.g. `{"spoken_date": "next saturday"}`.
+  (true/yes, false/no), `date` (ISO `YYYY-MM-DD`, `time` crate), `spoken_date` and `spoken_time` (non-empty text kept
+  as said, for the receiving project to work out). Values serialize externally tagged, e.g.
+  `{"spoken_date": "next saturday"}`, `{"spoken_time": "in the morning"}`.
 - **No two neighbouring steps may take the same kind of value** (`FormFieldKind::is_like`: both dates, both numbers,
   or equal): an answer meant for one fits the other. The builder asserts it, and the test `every_form_builds` builds
   every form so a bad order fails a test, not a call.
-- `DoctorAppointment`: `patient_name` (string), `date_of_birth` (date), `reason` (string), `appointment_datetime`
-  (spoken_date, "Preferred date and time of the appointment").
+- `DoctorAppointment`: `patient_name` (string), `date_of_birth` (date), `reason` (string), `appointment_date`
+  (spoken_date, "Date of the appointment"), `appointment_time` (spoken_time, "Preferred time of the
+  appointment"). A spoken date and a spoken time are not alike for `is_like`, so the two can be neighbours.
 
 ### Validators
 
@@ -337,8 +351,17 @@ time are stored as said; the receiver interprets them against `completed_at`. A 
 ## Form completion → another project
 
 - When the last field is confirmed, `form_intent_context_handler` returns the form and sets the state to `Idle`. Once
-  the reply is formulated, `IntentMatchedHandler` logs `Completed FORM` and dispatches `FormCompletedEvent { call_id,
-  form }`. `FormSubmitter` POSTs, in a spawned task (10 s timeout), to `FORM_SUBMIT_URL`:
+  the reply is formulated, `IntentMatchedHandler` logs `Completed FORM`, calls the form's completion callback, sets
+  `last_filled_out_form` and dispatches `FormCompletedEvent { call_id, form }`.
+- **The completion callback** is `FormSupported::on_completed(hint_map, form)`: it gets the call's `HintMap` and the
+  completed form and says what of the form goes back into the hints. Which form has which callback is the `match` in
+  `on_completed`, under `validate()`; the callbacks are at the bottom of `form.rs`. Like the validators it is found by
+  the form's kind and not kept in the form. Everything that saves comes after it: `last_filled_out_form`, the POST
+  and the session. `doctor_appointment_completed` writes `patient_name`, `date_of_birth`, `appointment_date` and
+  `appointment_time` into `patient_full_name`, `date_of_birth_iso_8601`, `appointment_spoken_date` and
+  `appointment_spoken_time`, so a second form in the same call starts with them, each waiting for the caller's yes.
+  `reason` has no hint.
+- `FormSubmitter` POSTs, in a spawned task (10 s timeout), to `FORM_SUBMIT_URL`:
   ```json
   {"call_id": "…", "completed_at": "2026-10-06T09:51:02.55+03:00", "form": {"kind": "doctor_appointment", "fields": [ … ]}}
   ```
@@ -435,8 +458,9 @@ curl -s -X POST http://localhost:8080/assistant/handle-request -H 'Content-Type:
 
 - Mimic client: http://localhost:8080/mimic-client
 - Logs: `./logs/app.log.<date>` (UTC). Search `Machine prompt`, `Machine answered`, `Completed FORM`, `Form submitted`.
-- `cargo check -p app --all-targets` (31 warnings, see Leftovers). `cargo test -p app domain::` runs the 7 tests that
+- `cargo check -p app --all-targets` (31 warnings, see Leftovers). `cargo test -p app domain::` runs the 9 tests that
   need no services; the five in `tests.rs` are about the config, Postgres and Redis.
+- `evals/` holds the DeepEval suites that play goldens against the running app, see `evals/README.md`.
 - A piped script for the prompt loop has to end with `exit`: at the end of the input it keeps reading empty lines.
 
 ---
@@ -473,6 +497,40 @@ context:
 A hint is kept in the caller's language, while a value given inside the form is written in English by the form
 extractor. With the year in Russian words ("две тысячи девяносто первого") the extractor wrote 1991, so there was
 nothing to refuse.
+
+**Completion callback, two appointment fields and the held field name, 2026-10-06.** `cargo test -p app domain::`:
+9 pass. `evals/run.py -r 3` against the app container (474 test cases, 741 turns), next to the run before the change,
+which had one `appointment_datetime` field (426 test cases):
+
+| Check | Before, de | After, de | Before, en | After, en |
+|---|---|---|---|---|
+| Form State | 351/366 (96%) | 416/423 (98%) | 144/147 (98%) | 177/180 (98%) |
+| Completed Form | 15/15 | 13/15 | 9/9 | 9/9 |
+| Intent | 383/393 (97%) | 430/441 (98%) | 174/183 (95%) | 207/216 (96%) |
+| Reply Asks | 380/453 (84%) | 429/507 (85%) | 174/192 (91%) | 210/225 (93%) |
+
+- Date and time said before the form fill both fields, are read back one after the other, go back into the hints
+  when the form is complete, and a second form in the call starts with them.
+- **Day and time in one answer while the day is asked for.** Without the held field name the extractor filed 8 of
+  12 such answers under the time ("Morgen um 15 Uhr", "Tomorrow at 3 pm", "Monday at ten"), and a bare "Morgen" too,
+  so the day stayed empty and two scripted calls went in circles. Ten wordings of the extractor's rules and
+  descriptions changed nothing: 35 to 38 of 48 probes right, against 36 without them. With `form_field` held to the answerable fields, 45
+  of 48, and the day alone is written ("morgen", "tomorrow", "montag"). Replaying the 196 logged extractor prompts
+  with it changed 9 answers, none for the worse: the day-with-time answers, and "Irgendwann im Sommer" as a date of
+  birth, which used to be filed under the appointment. A time alone said while the day is asked for is now recorded
+  as the day and read back.
+- **Still open:** the formulator reads back the day and the time although only the day was recorded ("Der Termin
+  ist übermorgen um neun Uhr. Ist dies die korrekte Zeit?"), and the caller's yes confirms the day only. In the German
+  call that says "Übermorgen um neun Uhr", the time said again was matched as `confirm_yes` in 2 of 3 runs and the
+  form was not completed. The English one ("Tomorrow at 3 pm") completed in 3 of 3.
+- **"Preferred date of the appointment"** as the field's description made German replies ask for "den bevorzugten
+  Termin für den Termin": of 47 replayed German replies of the date step, 38 asked for the date, and 46 with "Date of
+  the appointment". "Preferred time of the appointment" asked for the time in 42 of 42.
+- **Reading the suite's pass rates:** the goldens of the form suite start from one walk through the form per language
+  and run, with its replies as their history, so the goldens of a step pass or fail together. German goldens outside
+  the known gaps were 84% in one run and 75% in the next, with only the date field's description changed: ten goldens
+  of the first three steps had flipped together. Nine of them had flipped the other way between the two runs before,
+  whose prompts for those steps were the same. Two runs do not rank two wordings; the replays above do.
 
 **How wordings are compared:** one run says little. vLLM does not always give the same answer at temperature 0 when two
 answers are close, and one different reply changes the history of every turn after it. Replay every logged
@@ -524,9 +582,10 @@ answers are close, and one different reply changes the history of every turn aft
    no main menu intent is about it. "What did I book?" / "Für wen habe ich den Termin gebucht?" matched `calendar_help`
    in 4 of 4 calls, and the formulator answered from the form against its `response_context`. On such a question the
    context extractor also fills the hints from `<conversation_history>` (3 of 3 calls: name, date of birth,
-   appointment), so the next form is prefilled with the last one's values. The form's values are not written into the
-   hints on purpose anywhere.
-10. One value per turn; no final confirmation of the whole form; no "end the call anyway?" inside a form; no
+   appointment). Since the completion callback the hints hold the form's values anyway.
+10. One value per turn: a caller who says the day and the time in one answer is asked for the time again once the
+    day is confirmed, and the reply in between reads both back (see Verification). Several values per turn, or a
+    read-back rendered in code, would close it. No final confirmation of the whole form; no "end the call anyway?" inside a form; no
     `required` flag; no skip or don't know; no `greeting`, `who_are_you`, `this_call` intents.
 11. `end_call` and `transfer_to_human` only set `action` (two TODOs in `main_menu_intent_context_handler`).
 12. The menu depends on the flow, not on the state inside it: `confirm_*` is offered with nothing pending.

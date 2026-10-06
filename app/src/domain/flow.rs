@@ -77,11 +77,11 @@ pub mod main_menu_flow {
 
     #[derive(JsonSchema, Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
     pub struct HintMap {
-        caller_full_name: Option<String>,
-        patient_full_name: Option<String>,
-        date_of_birth_iso_8601: Option<String>,
-        appointment_spoken_date: Option<String>,
-        appointment_spoken_time: Option<String>,
+        pub caller_full_name: Option<String>,
+        pub patient_full_name: Option<String>,
+        pub date_of_birth_iso_8601: Option<String>,
+        pub appointment_spoken_date: Option<String>,
+        pub appointment_spoken_time: Option<String>,
         // The form the caller filled out last in this call. Set by the turn that completes a form,
         // never by the context extractor, so it is kept out of the extractor's schema.
         #[schemars(skip)]
@@ -112,19 +112,12 @@ pub mod main_menu_flow {
         /// The hints the form has a field for, each as its field's kind reads it. A hint the kind
         /// cannot read is left out.
         fn form_values(&self, form: &Form) -> Vec<(&'static str, FormFieldValue)> {
-            // The form asks for the date and the time of the appointment as one value.
-            let appointment_datetime = [&self.appointment_spoken_date, &self.appointment_spoken_time]
-                .into_iter()
-                .flatten()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(" ");
-
             let hints = match form.kind {
                 FormSupported::DoctorAppointment => [
                     ("patient_name", self.patient_full_name.as_deref()),
                     ("date_of_birth", self.date_of_birth_iso_8601.as_deref()),
-                    ("appointment_datetime", Some(appointment_datetime.as_str())),
+                    ("appointment_date", self.appointment_spoken_date.as_deref()),
+                    ("appointment_time", self.appointment_spoken_time.as_deref()),
                 ],
             };
 
@@ -263,6 +256,7 @@ pub mod main_menu_flow {
                 rules: [
                     "Reply in the language given by <language> in <context>",
                     "Only ask one question in reply",
+                    "When introducing an abbreviation or acronym, expand it to its full form on first mention (e.g., 'API (Application Programming Interface)'). For common everyday terms like ID, HTML, or USB, keep them as abbreviations.",
                     "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
                     "Follow <response_context> instructions when answering and take its content into consideration"
                 ]
@@ -295,10 +289,9 @@ pub mod main_menu_flow {
                 }
             },
             CallerIntent::StartForm { form } => start_form(
-                &mut session.data.state,
                 form,
-                &session.data.call_memory.hint_map,
                 app_state,
+                session,
             ).await,
             CallerIntent::Repeat if has_conversation_history => "The caller asked to hear your last reply from <conversation_history>."
                 .to_string(),
@@ -364,11 +357,12 @@ pub mod main_menu_flow {
         }
     }
 
-    async fn start_form(state: &mut CallState, form: FormSupported, hint_map: &HintMap, app_state: &AppState) -> String {
+    async fn start_form(form: FormSupported, app_state: &AppState, session: &mut CallSession) -> String {
         let mut built = form.build();
-        hint_map.prefill(&mut built, app_state).await;
-        let context = format!("Started the {form} form. {}", next_step(&built));
-        *state = CallState::FormInProgress(built);
+        session.data.call_memory.hint_map.prefill(&mut built, app_state).await;
+        let context = format!("Started the {form} form.");
+        session.call_turn_context.insert("next_step".into(), next_step(&built));
+        session.data.state = CallState::FormInProgress(built);
 
         context
     }
@@ -398,10 +392,11 @@ pub mod main_menu_flow {
             assert_eq!(state("patient_name"), StepState::AwaitingConfirmation);
             assert_eq!(state("date_of_birth"), StepState::Queued);
             assert_eq!(state("reason"), StepState::Queued);
-            assert_eq!(state("appointment_datetime"), StepState::AwaitingConfirmation);
+            assert_eq!(state("appointment_date"), StepState::AwaitingConfirmation);
+            assert_eq!(state("appointment_time"), StepState::AwaitingConfirmation);
             assert_eq!(
-                form.find_field("appointment_datetime").unwrap().value,
-                Some(FormFieldValue::SpokenDate("next saturday in the morning".into()))
+                form.find_field("appointment_time").unwrap().value,
+                Some(FormFieldValue::SpokenTime("in the morning".into()))
             );
             assert_eq!(
                 next_step(&form),
@@ -417,6 +412,7 @@ pub mod form_flow {
     use schemars::JsonSchema;
     use lingua::Language;
     use serde::Deserialize;
+    use serde_json::{json, Value};
     use tracing::error;
     use crate::app::AppState;
     use crate::domain::call::{CallAction, CallerIntent, GetInformationSupported};
@@ -446,9 +442,10 @@ pub mod form_flow {
         fn valid_value_description(&self) -> &'static str {
             "The value the caller gave for that field. Set it only when the caller gave one, otherwise leave \
             `form_field_value` out. For a field of kind `date` write YYYY-MM-DD. For a field of kind \
-            `spoken_date` write the caller's words in English and lowercase, such as \"next saturday\" or \
-            \"tomorrow evening\", without working the date out. Write numbers as digits, yes and no as true and false, \
-            and text as the caller said it"
+            `spoken_date` write the caller's words for the day in English and lowercase, such as \"next saturday\" \
+            or \"tomorrow\", without working the date out. For a field of kind `spoken_time` write the caller's \
+            words for the time of day the same way, such as \"in the morning\" or \"3 pm\". Write numbers as \
+            digits, yes and no as true and false, and text as the caller said it"
         }
     }
 
@@ -478,6 +475,14 @@ pub mod form_flow {
                 ("form_field", &self.form_field as &dyn ValueSchema),
                 ("form_field_value", &self.form_field_value as &dyn ValueSchema),
             ].into_iter())
+        }
+
+        /// Holds `form_field` to the fields the caller can be answering. Asked for the day, the model files
+        /// "tomorrow at 3 pm" or a bare "morgen" under the time, and no rule talked it out of that.
+        fn fit_schema(schema: &mut Value, call_session: &CallSession) {
+            if let CallState::FormInProgress(form) = &call_session.data.state {
+                schema["properties"]["form_field"]["enum"] = json!(form.answerable_fields());
+            }
         }
     }
 
@@ -589,10 +594,11 @@ pub mod form_flow {
                     "Reply in the language given by <language> in <context>",
                     "Only ask one question in reply",
                     "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
-                    "Follow <response_context> instructions when answering and take its content into consideration",
-                    "When <response_context> ends with a next step, end the reply with that step and ask nothing \
+                    "Take <response_context> information into consideration when answering",
+                    "When <next_step> is set in <context>, end the reply with that step and ask nothing \
                     else. To have a value confirmed, say what the value is for, read it back and ask plainly \
                     whether it is right",
+                    "When introducing an abbreviation or acronym, expand it to its full form on first mention (e.g., 'API (Application Programming Interface)'). For common everyday terms like ID, HTML, or USB, keep them as abbreviations.",
                     "Say forms, fields and values in plain words, never as their snake_case names or states",
                     "Answer a question about the form only from the fields of <form_state>: a field without a value \
                     has not been given yet, and a field that is not `completed` has not been confirmed yet",
@@ -690,7 +696,8 @@ pub mod form_flow {
         let completed_form = match &session.data.state {
             CallState::FormInProgress(form) if form.is_filled() => Some(form.clone()),
             CallState::FormInProgress(form) if asks_next_step => {
-                backend_context = format!("{backend_context} {}", next_step(form));
+
+                session.call_turn_context.insert("next_step".into(), next_step(form));
 
                 None
             }
@@ -763,7 +770,7 @@ pub mod form_flow {
 
         match given {
             FormFieldValue::Bool(_) => false,
-            FormFieldValue::String(_) | FormFieldValue::SpokenDate(_) => {
+            FormFieldValue::String(_) | FormFieldValue::SpokenDate(_) | FormFieldValue::SpokenTime(_) => {
                 let (held, said) = (words(&held.to_string()), words(utterance));
                 let new: Vec<_> = words(value).into_iter().filter(|word| !held.contains(word)).collect();
 

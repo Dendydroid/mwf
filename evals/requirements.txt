@@ -1,0 +1,7 @@
+deepeval==4.2.8
+httpx
+redis
+# The language detector the app uses, here to tell the language of a reply
+lingua-language-detector
+# deepeval test run keeps its results behind a file lock, which needs this on Windows
+pywin32; sys_platform == "win32"
