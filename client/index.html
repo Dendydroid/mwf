@@ -11,7 +11,8 @@
   The backend handles one spoken sentence at a time: POST the text to
   /assistant/handle-request, with the call's id in the `x-call-id` header, and
   it comes back with a sentence to read out, the intent it matched, the
-  language it detected, its reasoning and an `action` for the phone side
+  language it detected, its reasoning, what the call holds after the turn (the
+  hint map and the form in progress) and an `action` for the phone side
   (continue, end the call, transfer to a human). That is the whole contract,
   and this page is the thing that supplies the speaking half of it - a
   stand-in for whatever telephony service would eventually be on the other end
@@ -211,6 +212,39 @@
     z-index: -1;
   }
 
+  /* What does not fit in a badge: the two sentences behind the answer, and what
+     the call holds once the turn is over. Every turn shows all four, filled or
+     not, for the same reason the false booleans stay in the badge row. */
+  .details {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: 13px;
+    /* A response context can be raw JSON from a backend, with no space to break at. */
+    overflow-wrap: anywhere;
+  }
+
+  .details .key { display: block; font-size: 11px; letter-spacing: .04em; color: var(--muted); }
+
+  .rows { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; align-items: baseline; }
+  .rows.form { grid-template-columns: max-content 1fr max-content; }
+
+  .rows .name { font: 12px ui-monospace, Consolas, monospace; color: var(--muted); }
+  .rows .value { min-width: 0; overflow-wrap: anywhere; }
+
+  /* The step the caller is on. */
+  .rows .name.current { color: var(--accent); }
+  .rows .name.current::before { content: "▸ "; }
+
+  /* Its own width, not the column's. */
+  .rows .tag { justify-self: start; }
+
+  .none { opacity: .45; }
+
+  .tag.state[data-state="completed"] { color: var(--system); border-color: var(--system); }
+  .tag.state[data-state="awaiting_confirmation"] { color: var(--warn); border-color: var(--warn); }
+
   .empty { color: var(--muted); font-size: 13px; }
 
   code { background: #12141a; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
@@ -222,8 +256,9 @@
   <h1>ai assistant mimic client</h1>
   <p class="subtitle">
     Speak &rarr; Chrome transcribes &rarr; <code>POST /assistant/handle-request</code> &rarr;
-    the answer is read back. Every other key of the response is shown as a
-    badge under it.
+    the answer is read back. The rest of the response is shown under it: the
+    intent and the other short facts as badges, then the reasoning, the
+    response context, the hint map and the form.
   </p>
 
   <section class="panel">
@@ -344,16 +379,30 @@
     statusTextEl.textContent = text;
   };
 
-  // The one key the page treats specially, because it is the sentence being
-  // read out rather than a fact about the turn. Everything else in the response
-  // is a badge, whatever it is called - which is what lets a key added to
-  // `AssistantResponse` in routes/api.rs show up here with no change to this file.
+  // The sentence being read out rather than a fact about the turn. Every key of
+  // the response that is not named here is a badge, whatever it is called -
+  // which is what lets a key added to `AssistantResponse` in routes/api.rs show
+  // up here with no change to this file.
   const ANSWER_KEY = "answer";
 
   // Also not a badge: the function name leads the row and is rendered as its
   // value alone, so it is pulled out of the generic loop rather than excluded
   // from the response.
   const FUNCTION_KEY = "selected_function";
+
+  // Too long for a badge, so each gets a line of its own under the row: what the
+  // intent matcher made of the utterance, and what the backend then told the
+  // response formulator to say.
+  const TEXT_KEYS = ["reasoning", "response_context"];
+
+  // What the call holds once the turn is over, shown as rows: the caller's hints
+  // a form gets prefilled with, and the form in progress, `null` in the main menu.
+  const HINT_MAP_KEY = "hint_map";
+  const FORM_KEY = "form";
+
+  // The one key of the hint map that is not a hint the caller gave: the form
+  // they filled out last in this call, shown like the form in progress.
+  const LAST_FORM_KEY = "last_filled_out_form";
 
   /**
    * Builds one badge for a key/value pair of the decision.
@@ -408,13 +457,86 @@
     return badge;
   }
 
+  function span(className, text) {
+    const el = document.createElement("span");
+    el.className = className;
+    el.textContent = text;
+    return el;
+  }
+
+  /** A value, or a dimmed dash in its place so the rows keep their shape. */
+  function valueSpan(value) {
+    const missing = value === null || value === undefined;
+    return span(missing ? "value none" : "value", missing ? "—" : String(value));
+  }
+
+  /** One titled block under the badges. */
+  function detail(title, content) {
+    const block = document.createElement("div");
+    block.append(span("key", title), content);
+    return block;
+  }
+
+  function textDetail(key, text) {
+    const body = document.createElement("div");
+    if (typeof text === "string" && text) {
+      body.textContent = text;
+    } else {
+      body.className = "none";
+      body.textContent = "—";
+    }
+    return detail(key, body);
+  }
+
+  /** Every hint the map has a key for, said by the caller or not. */
+  function hintMapDetail(hintMap) {
+    const rows = document.createElement("div");
+    rows.className = "rows";
+    for (const [name, value] of Object.entries(hintMap)) {
+      rows.append(span("name", name), valueSpan(value));
+    }
+    return detail(HINT_MAP_KEY, rows);
+  }
+
+  /** The form's fields in the order they are asked for, each with its value and state. */
+  function formDetail(title, form) {
+    if (!form) { return detail(title, valueSpan(null)); }
+
+    const rows = document.createElement("div");
+    rows.className = "rows form";
+
+    // The same rule as `Form::current_field` in domain/form.rs.
+    const current = form.fields.find((field) => field.state !== "completed");
+
+    for (const field of form.fields) {
+      // A value comes tagged with its kind, as {"date": "1992-06-13"}.
+      const value = field.value ? Object.values(field.value)[0] : null;
+
+      const state = span("tag state", field.state);
+      state.dataset.state = field.state;
+      if (field.confirmation_failed_counter) {
+        state.textContent += ` · rejected ${field.confirmation_failed_counter}×`;
+      }
+
+      rows.append(
+        span(field === current ? "name current" : "name", field.name),
+        valueSpan(value),
+        state
+      );
+    }
+
+    return detail(`${title} ${form.kind}`, rows);
+  }
+
   /**
-   * Appends one line to the transcript.
+   * Adds one line to the top of the transcript: the newest is the one being
+   * looked at, and an answer with its details is tall enough to push it off
+   * the screen at the bottom.
    *
-   * `decision`, when given, is the endpoint's whole reply: its keys other than
-   * `answer` each become a badge, in the order the response lists them - which
-   * is the field order of `AssistantResponse`, preserved all the way through
-   * the backend.
+   * `decision`, when given, is the endpoint's whole reply. Its short keys each
+   * become a badge, in the order the response lists them - which is the field
+   * order of `AssistantResponse`, preserved all the way through the backend -
+   * and the long ones follow as blocks.
    */
   function addTurn(kind, who, text, decision) {
     logEl.querySelector(".empty")?.remove();
@@ -445,15 +567,35 @@
         tags.append(fn);
       }
 
+      const shownElsewhere = [ANSWER_KEY, FUNCTION_KEY, ...TEXT_KEYS, HINT_MAP_KEY, FORM_KEY];
+
       for (const [key, value] of Object.entries(decision)) {
-        if (key === ANSWER_KEY || key === FUNCTION_KEY) { continue; }
+        if (shownElsewhere.includes(key)) { continue; }
         tags.append(badgeFor(key, value));
       }
 
       if (tags.childElementCount) { turn.append(tags); }
+
+      const details = document.createElement("div");
+      details.className = "details";
+
+      // Soft reads, like `language_detected`: a backend without one of these
+      // keys only loses its block.
+      for (const key of TEXT_KEYS) {
+        if (key in decision) { details.append(textDetail(key, decision[key])); }
+      }
+      if (decision[HINT_MAP_KEY]) {
+        const { [LAST_FORM_KEY]: lastForm, ...hints } = decision[HINT_MAP_KEY];
+
+        details.append(hintMapDetail(hints));
+        if (LAST_FORM_KEY in decision[HINT_MAP_KEY]) { details.append(formDetail(LAST_FORM_KEY, lastForm)); }
+      }
+      if (FORM_KEY in decision) { details.append(formDetail(FORM_KEY, decision[FORM_KEY])); }
+
+      if (details.childElementCount) { turn.append(details); }
     }
 
-    logEl.append(turn);
+    logEl.prepend(turn);
     turn.scrollIntoView({ block: "nearest" });
   }
 

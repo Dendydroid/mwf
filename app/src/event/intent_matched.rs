@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use reqwest::Client;
+use crate::app::AppState;
 use crate::domain::call_session::CallSession;
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use crate::event::form_completed::FormCompletedEvent;
@@ -15,14 +16,22 @@ pub struct IntentMatchedEvent {
     pub intent: IntentMatched,
     // Handlers are built once at startup, so the call's session comes with the event.
     call_session: Arc<tokio::sync::RwLock<CallSession>>,
+    // So does the app state: the handlers are built before it, as a part of it.
+    app_state: Arc<AppState>,
 }
 
 impl IntentMatchedEvent {
-    pub fn new(utterance: &str, intent: IntentMatched, call_session: Arc<tokio::sync::RwLock<CallSession>>) -> Self {
+    pub fn new(
+        utterance: &str,
+        intent: IntentMatched,
+        call_session: Arc<tokio::sync::RwLock<CallSession>>,
+        app_state: Arc<AppState>,
+    ) -> Self {
         Self {
             utterance: utterance.to_string(),
             intent,
             call_session,
+            app_state,
         }
     }
 }
@@ -43,7 +52,8 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                 main_menu_intent_context_handler(
                     &main_menu_intent,
                     &mut session,
-                    &self.http_client
+                    &self.http_client,
+                    &event.app_state
                 ).await;
 
                 match Machine::main_menu_response_formulator()
@@ -72,7 +82,8 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                     &form_value,
                     &event.utterance,
                     &mut session,
-                    &self.http_client
+                    &self.http_client,
+                    &event.app_state
                 ).await;
 
                 match Machine::form_response_formulator()
@@ -90,6 +101,9 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                         // Only now, so a form the caller was not told about is not sent either.
                         if let Some(form) = completed_form {
                             tracing::log::info!("Completed FORM: {}", form.context_value());
+
+                            // Saved with the session, for the main menu to know what the caller has filled out.
+                            session.data.call_memory.hint_map.last_filled_out_form = Some(form.clone());
 
                             let mut form_completed_event = FormCompletedEvent::new(&session.call_id, form);
 

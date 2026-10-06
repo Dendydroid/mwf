@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use crate::app::AppState;
 use crate::domain::call_session::CallSession;
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use tracing::log::error;
@@ -14,14 +15,22 @@ pub struct ContextExtractedEvent {
     pub context: FlowContext,
     // Handlers are built once at startup, so the call's session comes with the event.
     call_session: Arc<tokio::sync::RwLock<CallSession>>,
+    // So does the app state: the handlers are built before it, as a part of it.
+    app_state: Arc<AppState>,
 }
 
 impl ContextExtractedEvent {
-    pub fn new(utterance: &str, context: FlowContext, call_session: Arc<tokio::sync::RwLock<CallSession>>) -> Self {
+    pub fn new(
+        utterance: &str,
+        context: FlowContext,
+        call_session: Arc<tokio::sync::RwLock<CallSession>>,
+        app_state: Arc<AppState>,
+    ) -> Self {
         Self {
             utterance: utterance.to_string(),
             context,
             call_session,
+            app_state,
         }
     }
 }
@@ -40,6 +49,9 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
                 session.merge_filled_hint_map_values(hint_map.clone());
 
                 tracing::log::info!("Updated HINT MAP: {:?}", session.data.call_memory.hint_map);
+
+                // Only from here on: the context extractor takes its values for hints the caller gave.
+                session.add_recently_completed_form_context();
 
                 let matched = Machine::main_menu_intent_matcher()
                     .query::<ExtractedMainMenuIntent>(
@@ -60,6 +72,7 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
                             &event.utterance,
                             IntentMatched::MainMenu(intent),
                             event.call_session.clone(),
+                            event.app_state.clone(),
                         );
 
                         dispatcher.dispatch(&mut intent_matched_event).await;
@@ -91,6 +104,7 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
                             &event.utterance,
                             IntentMatched::Form(intent, form_value.clone()),
                             event.call_session.clone(),
+                            event.app_state.clone(),
                         );
 
                         dispatcher.dispatch(&mut intent_matched_event).await;

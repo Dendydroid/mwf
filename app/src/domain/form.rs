@@ -1,8 +1,10 @@
 use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::types::chrono::Local;
 use time::format_description::well_known::Iso8601;
 use time::Date;
+use crate::app::AppState;
 use crate::domain::call::FormSupported;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,8 +257,39 @@ impl FormSupported {
                 .field("patient_name", "Full name of the patient", FormFieldKind::String)
                 .field("date_of_birth", "Patient's date of birth", FormFieldKind::Date)
                 .field("reason", "Reason for the visit", FormFieldKind::String)
-                .field("appointment_date", "Preferred date of the appointment", FormFieldKind::SpokenDate),
+                .field("appointment_datetime", "Preferred date and time of the appointment", FormFieldKind::SpokenDate),
         }
+    }
+
+    /// Asks the validators of a field about a value the field is about to take. They are found by
+    /// the field's name and not kept in the field, which is saved with the call between its turns.
+    pub async fn validate(self, app_state: &AppState, field: &str, value: &FormFieldValue) -> Result<(), ValidationError> {
+        match (self, field) {
+            (FormSupported::DoctorAppointment, "date_of_birth") => {
+                date_of_birth_not_in_the_future(app_state, value).await
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Why a validator refused a value, written for the response formulator: what to tell the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidationError(pub String);
+
+/*
+    Validators: each gets the app state and the value its field is about to take
+*/
+
+async fn date_of_birth_not_in_the_future(_: &AppState, value: &FormFieldValue) -> Result<(), ValidationError> {
+    // Today on the clock `current_time` is taken from, read the way the form reads a date
+    let today = Date::parse(&Local::now().date_naive().to_string(), &Iso8601::DATE).ok();
+
+    match value {
+        FormFieldValue::Date(date) if today.is_some_and(|today| *date > today) => {
+            Err(ValidationError("A date of birth cannot be in the future. Tell the caller that.".to_string()))
+        }
+        _ => Ok(()),
     }
 }
 

@@ -16,6 +16,9 @@ use crate::settings::AppSettings;
 const FORM_STATE_CONTEXT_KEY: &str = "form_state";
 const LANGUAGE_CONTEXT_KEY: &str = "language";
 
+// The last 10 messages of a call: a turn is the caller's and the assistant's
+const MAX_CONVERSATION_TURNS: usize = 5;
+
 pub struct CallSession {
     cache: Cache,
 
@@ -102,7 +105,12 @@ impl CallSession {
     }
 
     pub fn save_call_turn(&mut self, call_turn: CallTurn) {
-        self.data.call_memory.conversation.push(call_turn);
+        let conversation = &mut self.data.call_memory.conversation;
+        conversation.push(call_turn);
+
+        // The oldest turns are forgotten first
+        let excess = conversation.len().saturating_sub(MAX_CONVERSATION_TURNS);
+        conversation.drain(..excess);
     }
 
     pub fn save_last_exchange(&mut self, utterance: &str, spoken_response: &str) {
@@ -141,6 +149,17 @@ impl CallSession {
 
     pub fn merge_filled_hint_map_values(&mut self, hint_map_input: HintMap) {
         self.data.call_memory.hint_map.merge(hint_map_input);
+    }
+
+    /// Puts the form the caller filled out last into the turn's context, under its own kind:
+    /// e.g. `<recently_completed_doctor_appointment_form>`.
+    pub fn add_recently_completed_form_context(&mut self) {
+        if let Some(form) = &self.data.call_memory.hint_map.last_filled_out_form {
+            self.call_turn_context.insert(
+                format!("recently_completed_{}_form", form.kind),
+                form.values_summary(),
+            );
+        }
     }
 
     pub fn get_conversation(&self) -> &[CallTurn] {

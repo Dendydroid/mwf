@@ -3,6 +3,7 @@ use std::sync::Arc;
 use lingua::{IsoCode639_1, Language};
 use tracing::log::{error, info};
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
+use crate::app::AppState;
 use crate::classifier::detect_language;
 use crate::domain::call_session::{CallSession, CallState};
 use crate::domain::flow::FlowContext;
@@ -17,6 +18,8 @@ pub struct CallerSpokeEvent {
     utterance: String,
     // Handlers are built once at startup, so the call's session comes with the event.
     call_session: Arc<tokio::sync::RwLock<CallSession>>,
+    // So does the app state: the handlers are built before it, as a part of it.
+    app_state: Arc<AppState>,
 }
 
 impl CallerSpokeEvent {
@@ -24,11 +27,13 @@ impl CallerSpokeEvent {
         call_id: &str,
         utterance: &str,
         call_session: Arc<tokio::sync::RwLock<CallSession>>,
+        app_state: Arc<AppState>,
     ) -> Self {
         Self {
             call_id: call_id.to_string(),
             utterance: utterance.to_string(),
             call_session,
+            app_state,
         }
     }
 }
@@ -107,7 +112,12 @@ impl EventHandler<CallerSpokeEvent> for CallerSpokeHandler {
 
         // 3. Dispatch context extracted event
         if let Some(context) = context {
-            let mut extracted_context = ContextExtractedEvent::new(&event.utterance, context, event.call_session.clone());
+            let mut extracted_context = ContextExtractedEvent::new(
+                &event.utterance,
+                context,
+                event.call_session.clone(),
+                event.app_state.clone(),
+            );
 
             dispatcher.dispatch(&mut extracted_context).await;
         }

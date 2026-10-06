@@ -66,11 +66,12 @@ pub mod main_menu_flow {
     use lingua::Language;
     use serde::{Deserialize, Serialize};
     use tracing::error;
+    use crate::app::AppState;
     use crate::domain::call::{CallAction, CallerIntent, FormSupported, GetInformationSupported};
     use crate::domain::call_session::{CallSession, CallState, CallTurnOutcome};
     use crate::domain::flow::Reasoning;
     use crate::domain::flow::form_flow::next_step;
-    use crate::domain::form::Form;
+    use crate::domain::form::{Form, FormFieldValue};
     use crate::domain::machine::{AllowedValue, Machine, OutputFormat, ValueSchema};
     use crate::vllm::Answer;
 
@@ -81,6 +82,10 @@ pub mod main_menu_flow {
         date_of_birth_iso_8601: Option<String>,
         appointment_spoken_date: Option<String>,
         appointment_spoken_time: Option<String>,
+        // The form the caller filled out last in this call. Set by the turn that completes a form,
+        // never by the context extractor, so it is kept out of the extractor's schema.
+        #[schemars(skip)]
+        pub last_filled_out_form: Option<Form>,
     }
 
     impl HintMap {
@@ -95,26 +100,45 @@ pub mod main_menu_flow {
 
         /// Puts what the caller already said into a form that was just started. Those values wait for the
         /// caller's confirmation like the ones given inside the form, so the caller is only asked whether
-        /// they are right. A hint the field's kind cannot read is left out, and the field is asked for.
-        pub fn prefill(&self, form: &mut Form) {
-            let hints = match form.kind {
-                FormSupported::DoctorAppointment => [
-                    ("patient_name", &self.patient_full_name),
-                    ("date_of_birth", &self.date_of_birth_iso_8601),
-                    ("appointment_date", &self.appointment_spoken_date),
-                ],
-            };
-
-            for (name, hint) in hints {
-                let value = form
-                    .find_field(name)
-                    .zip(hint.as_deref())
-                    .and_then(|(field, text)| field.kind.parse(text));
-
-                if let Some(value) = value {
+        /// they are right. A hint the field's validators refuse is left out, and the field is asked for.
+        pub async fn prefill(&self, form: &mut Form, app_state: &AppState) {
+            for (name, value) in self.form_values(form) {
+                if form.kind.validate(app_state, name, &value).await.is_ok() {
                     form.fill_field(name, value);
                 }
             }
+        }
+
+        /// The hints the form has a field for, each as its field's kind reads it. A hint the kind
+        /// cannot read is left out.
+        fn form_values(&self, form: &Form) -> Vec<(&'static str, FormFieldValue)> {
+            // The form asks for the date and the time of the appointment as one value.
+            let appointment_datetime = [&self.appointment_spoken_date, &self.appointment_spoken_time]
+                .into_iter()
+                .flatten()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let hints = match form.kind {
+                FormSupported::DoctorAppointment => [
+                    ("patient_name", self.patient_full_name.as_deref()),
+                    ("date_of_birth", self.date_of_birth_iso_8601.as_deref()),
+                    ("appointment_datetime", Some(appointment_datetime.as_str())),
+                ],
+            };
+
+            hints
+                .into_iter()
+                .filter_map(|(name, hint)| {
+                    let value = form
+                        .find_field(name)
+                        .zip(hint)
+                        .and_then(|(field, text)| field.kind.parse(text))?;
+
+                    Some((name, value))
+                })
+                .collect()
         }
     }
 
@@ -247,8 +271,13 @@ pub mod main_menu_flow {
             }
         }
     }
-    
-    pub async fn main_menu_intent_context_handler(intent: &ExtractedMainMenuIntent, session: &mut CallSession, http_client: &Client) {
+
+    pub async fn main_menu_intent_context_handler(
+        intent: &ExtractedMainMenuIntent,
+        session: &mut CallSession,
+        http_client: &Client,
+        app_state: &AppState,
+    ) {
         let caller_intent = CallerIntent::from_label(intent.caller_intent())
             .unwrap_or(CallerIntent::Unsupported);
 
@@ -269,7 +298,8 @@ pub mod main_menu_flow {
                 &mut session.data.state,
                 form,
                 &session.data.call_memory.hint_map,
-            ),
+                app_state,
+            ).await,
             CallerIntent::Repeat if has_conversation_history => "The caller asked to hear your last reply from <conversation_history>."
                 .to_string(),
             CallerIntent::EndCall => {
@@ -334,9 +364,9 @@ pub mod main_menu_flow {
         }
     }
 
-    fn start_form(state: &mut CallState, form: FormSupported, hint_map: &HintMap) -> String {
+    async fn start_form(state: &mut CallState, form: FormSupported, hint_map: &HintMap, app_state: &AppState) -> String {
         let mut built = form.build();
-        hint_map.prefill(&mut built);
+        hint_map.prefill(&mut built, app_state).await;
         let context = format!("Started the {form} form. {}", next_step(&built));
         *state = CallState::FormInProgress(built);
 
@@ -355,17 +385,24 @@ pub mod main_menu_flow {
                 // Not a date, so the field is asked for
                 date_of_birth_iso_8601: Some("in June".into()),
                 appointment_spoken_date: Some("next saturday".into()),
+                appointment_spoken_time: Some("in the morning".into()),
                 ..Default::default()
             };
 
             let mut form = FormSupported::DoctorAppointment.build();
-            hint_map.prefill(&mut form);
+            for (name, value) in hint_map.form_values(&form) {
+                form.fill_field(name, value);
+            }
 
             let state = |name: &str| form.find_field(name).unwrap().state;
             assert_eq!(state("patient_name"), StepState::AwaitingConfirmation);
             assert_eq!(state("date_of_birth"), StepState::Queued);
             assert_eq!(state("reason"), StepState::Queued);
-            assert_eq!(state("appointment_date"), StepState::AwaitingConfirmation);
+            assert_eq!(state("appointment_datetime"), StepState::AwaitingConfirmation);
+            assert_eq!(
+                form.find_field("appointment_datetime").unwrap().value,
+                Some(FormFieldValue::SpokenDate("next saturday in the morning".into()))
+            );
             assert_eq!(
                 next_step(&form),
                 "Next, ask the caller to confirm that Full name of the patient is John Smith."
@@ -381,10 +418,11 @@ pub mod form_flow {
     use lingua::Language;
     use serde::Deserialize;
     use tracing::error;
+    use crate::app::AppState;
     use crate::domain::call::{CallAction, CallerIntent, GetInformationSupported};
     use crate::domain::call_session::{CallSession, CallState, CallTurnOutcome};
     use crate::domain::flow::Reasoning;
-    use crate::domain::form::{Form, FormField, FormFieldKind, FormFieldValue, StepState};
+    use crate::domain::form::{Form, FormField, FormFieldKind, FormFieldValue, StepState, ValidationError};
     use crate::domain::machine::{AllowedValue, Machine, OutputFormat, ValueSchema};
     use crate::vllm::Answer;
 
@@ -574,6 +612,7 @@ pub mod form_flow {
         utterance: &str,
         session: &mut CallSession,
         http_client: &Client,
+        app_state: &AppState,
     ) -> Option<Form> {
         let caller_intent = CallerIntent::from_label(intent.caller_intent())
             .unwrap_or(CallerIntent::Unsupported);
@@ -601,13 +640,15 @@ pub mod form_flow {
             // A correction that comes without a value is only the denial.
             CallerIntent::CorrectFormFieldValue if given_value.is_none() => reject(form),
             // A correction never accepts the value that was read back, whichever field it is for.
-            CallerIntent::CorrectFormFieldValue => fill(form, form_value.form_field(), given_value, false),
+            CallerIntent::CorrectFormFieldValue => {
+                validate_and_fill(app_state, form, form_value.form_field(), given_value, false).await
+            }
             CallerIntent::ProvideFormFieldValue | CallerIntent::ReferToContextForFormFieldValue => {
-                fill(form, form_value.form_field(), given_value, true)
+                validate_and_fill(app_state, form, form_value.form_field(), given_value, true).await
             }
             // "Yes, but it is 1992": an agreement that comes with another value does not confirm the one read back.
             CallerIntent::ConfirmYes if replaces_read_back(form, form_value.form_field(), given_value, utterance) => {
-                fill(form, form_value.form_field(), given_value, false)
+                validate_and_fill(app_state, form, form_value.form_field(), given_value, false).await
             }
             CallerIntent::ConfirmYes => confirm(form),
             CallerIntent::ConfirmNo => reject(form),
@@ -690,11 +731,16 @@ pub mod form_flow {
         }
     }
 
-    /// Whether the field the extractor named, or the current one when it named none that exists, has this value.
-    fn holds(form: &Form, field: Option<&str>, value: &str) -> bool {
+    /// The field the extractor named, or the current one when it named none that exists.
+    fn target<'a>(form: &'a Form, field: Option<&str>) -> Option<&'a FormField> {
         field
             .and_then(|name| form.find_field(name))
             .or_else(|| form.current_field())
+    }
+
+    /// Whether the field the value is for has this value.
+    fn holds(form: &Form, field: Option<&str>, value: &str) -> bool {
+        target(form, field)
             .and_then(|field| field.value.as_ref())
             .is_some_and(|held| held.to_string().to_lowercase() == value.to_lowercase())
     }
@@ -737,13 +783,36 @@ pub mod form_flow {
             .collect()
     }
 
-    /// Fills the field the extractor named, or the current one when it named none that exists.
-    /// `moves_on` says whether a value for a later field accepts the one read back for the current field.
-    fn fill(form: &mut Form, field: Option<&str>, value: Option<&str>, moves_on: bool) -> String {
-        let Some(target) = field
-            .and_then(|name| form.find_field(name))
-            .or_else(|| form.current_field())
-        else {
+    /// `fill`, once the validators of the field the value is for had their say about it.
+    async fn validate_and_fill(
+        app_state: &AppState,
+        form: &mut Form,
+        field: Option<&str>,
+        value: Option<&str>,
+        moves_on: bool,
+    ) -> String {
+        let read = target(form, field)
+            .zip(value)
+            .and_then(|(target, text)| Some((target, target.kind.parse(text)?)));
+
+        let refused = match read {
+            Some((target, parsed)) => form.kind.validate(app_state, &target.name, &parsed).await.err(),
+            None => None,
+        };
+
+        fill(form, field, value, moves_on, refused)
+    }
+
+    /// Fills the field the value is for. `moves_on` says whether a value for a later field accepts the
+    /// one read back for the current field. `refused` is what the field's validators have against the value.
+    fn fill(
+        form: &mut Form,
+        field: Option<&str>,
+        value: Option<&str>,
+        moves_on: bool,
+        refused: Option<ValidationError>,
+    ) -> String {
+        let Some(target) = target(form, field) else {
             return "The form has no field left to fill.".to_string();
         };
         let (name, kind) = (target.name.clone(), target.kind);
@@ -753,6 +822,16 @@ pub mod form_flow {
         let Some(text) = value else {
             return format!("The caller gave no value for {name}.");
         };
+
+        // A refused value is not recorded. In place of the one that was read back it still says
+        // that one is wrong, like a value that cannot be read.
+        if let Some(ValidationError(reason)) = refused {
+            if was_read_back {
+                form.reject_current();
+            }
+
+            return format!("\"{text}\" was not recorded for {name}. {reason}");
+        }
 
         // Parsed with the field's own kind, so filling it cannot fail.
         match kind.parse(text) {
@@ -794,8 +873,8 @@ pub mod form_flow {
                     format!("The caller confirmed {name}. Thank them.")
                 }
             }
-            // A yes to a yes-or-no field is its value, not a confirmation.
-            (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("true"), false),
+            // A yes to a yes-or-no field is its value, not a confirmation. Validators are not asked about it.
+            (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("true"), false, None),
             _ => format!("The caller said yes, but {name} has no value to confirm yet."),
         }
     }
@@ -820,7 +899,7 @@ pub mod form_flow {
                     format!("The caller said the value for {name} is wrong, so it was dropped. Apologize for the mistake.")
                 }
             }
-            (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("false"), false),
+            (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("false"), false, None),
             _ => format!("The caller said no, but {name} has no value to reject."),
         }
     }
@@ -833,9 +912,9 @@ pub mod form_flow {
         /// The doctor form with the name confirmed and the date of birth read back to the caller.
         fn form() -> Form {
             let mut form = FormSupported::DoctorAppointment.build();
-            fill(&mut form, Some("patient_name"), Some("John Smith"), true);
+            fill(&mut form, Some("patient_name"), Some("John Smith"), true, None);
             form.confirm_current();
-            fill(&mut form, Some("date_of_birth"), Some("1991-06-13"), true);
+            fill(&mut form, Some("date_of_birth"), Some("1991-06-13"), true, None);
 
             form
         }
@@ -855,7 +934,7 @@ pub mod form_flow {
         #[test]
         fn agreement_with_another_text_replaces_it_only_in_words_the_caller_said() {
             let mut form = FormSupported::DoctorAppointment.build();
-            fill(&mut form, None, Some("John Smith"), true);
+            fill(&mut form, None, Some("John Smith"), true, None);
             let field = Some("patient_name");
 
             assert!(replaces_read_back(&form, field, Some("John Smyth"), "Yes, but it's Smyth with a y"));
@@ -867,7 +946,7 @@ pub mod form_flow {
         #[test]
         fn unreadable_value_in_place_of_the_one_read_back_drops_it() {
             let mut form = form();
-            fill(&mut form, Some("date_of_birth"), Some("1992"), false);
+            fill(&mut form, Some("date_of_birth"), Some("1992"), false, None);
 
             let field = form.find_field("date_of_birth").unwrap();
             assert_eq!(
@@ -877,15 +956,35 @@ pub mod form_flow {
         }
 
         #[test]
+        fn refused_value_is_not_recorded_and_drops_the_one_read_back() {
+            let refused = || Some(ValidationError("Tell the caller why.".into()));
+            let field = |form: &Form, name: &str| form.find_field(name).unwrap().clone();
+
+            let mut replaced = form();
+            let context = fill(&mut replaced, Some("date_of_birth"), Some("2091-06-13"), false, refused());
+            assert_eq!(context, "\"2091-06-13\" was not recorded for date_of_birth. Tell the caller why.");
+            assert_eq!(
+                (field(&replaced, "date_of_birth").state, field(&replaced, "date_of_birth").value),
+                (StepState::Queued, None)
+            );
+
+            // For a later field it neither accepts the value read back nor drops it
+            let mut moved_on = form();
+            fill(&mut moved_on, Some("reason"), Some("headache"), true, refused());
+            assert_eq!(field(&moved_on, "date_of_birth").state, StepState::AwaitingConfirmation);
+            assert_eq!(field(&moved_on, "reason").value, None);
+        }
+
+        #[test]
         fn only_moving_on_accepts_the_value_read_back() {
             let state = |form: &Form| form.find_field("date_of_birth").unwrap().state;
 
             let mut corrected = form();
-            fill(&mut corrected, Some("reason"), Some("headache"), false);
+            fill(&mut corrected, Some("reason"), Some("headache"), false, None);
             assert_eq!(state(&corrected), StepState::AwaitingConfirmation);
 
             let mut moved_on = form();
-            fill(&mut moved_on, Some("reason"), Some("headache"), true);
+            fill(&mut moved_on, Some("reason"), Some("headache"), true, None);
             assert_eq!(state(&moved_on), StepState::Completed);
         }
     }

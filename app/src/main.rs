@@ -108,7 +108,8 @@ async fn run_prompt_loop(app_state: Arc<AppState>) -> anyhow::Result<()> {
         let mut caller_spoke_event = CallerSpokeEvent::new(
             call_id,
             input,
-            Arc::clone(&call_session)
+            Arc::clone(&call_session),
+            Arc::clone(&app_state)
         );
 
         app_state.event_dispatcher.dispatch(&mut caller_spoke_event).await;

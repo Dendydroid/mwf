@@ -1,6 +1,8 @@
 use crate::app::AppState;
 use crate::domain::call::CallAction;
-use crate::domain::call_session::CallSession;
+use crate::domain::call_session::{CallSession, CallState};
+use crate::domain::flow::main_menu_flow::HintMap;
+use crate::domain::form::Form;
 use crate::error::ApiError;
 use crate::event::caller_spoke::CallerSpokeEvent;
 use crate::routes::call_session_middleware::call_session_middleware;
@@ -91,7 +93,7 @@ struct AssistantRequestPayload {
 }
 
 /// `answer` is what the caller hears; the mimic client shows every other key
-/// as a badge, led by `selected_function`, and speaks in `language_detected`.
+/// under it, led by `selected_function`, and speaks in `language_detected`.
 #[derive(Serialize)]
 struct AssistantResponse {
     answer: String,
@@ -102,6 +104,12 @@ struct AssistantResponse {
     language_detected: String,
     action: CallAction,
     reasoning: Option<String>,
+    // What the intent handler gave the response formulator, `None` when the turn failed before it
+    response_context: Option<String>,
+    // What the call has of the caller's hints once the turn is over
+    hint_map: HintMap,
+    // The form in progress once the turn is over, `None` in the main menu
+    form: Option<Form>,
 }
 
 async fn handle_assistant_request(
@@ -130,7 +138,8 @@ async fn handle_assistant_request(
     let mut caller_spoke_event = CallerSpokeEvent::new(
         &call_id,
         utterance,
-        Arc::clone(&call_session)
+        Arc::clone(&call_session),
+        Arc::clone(&state)
     );
 
     state.event_dispatcher.dispatch(&mut caller_spoke_event).await;
@@ -139,6 +148,10 @@ async fn handle_assistant_request(
     let outcome = &session.call_turn_outcome;
     let selected_function = outcome.caller_intent.map(|intent| intent.to_string());
     let answer = session.data.last_spoken_response.clone().unwrap_or_default();
+    let form = match &session.data.state {
+        CallState::FormInProgress(form) => Some(form.clone()),
+        CallState::Idle => None,
+    };
 
     info!(
         call_id,
@@ -156,5 +169,8 @@ async fn handle_assistant_request(
         language_detected: session.data.language.iso_code_639_1().to_string(),
         action: outcome.action,
         reasoning: outcome.machine_reasoning.clone(),
+        response_context: session.call_turn_context.get("response_context").cloned(),
+        hint_map: session.data.call_memory.hint_map.clone(),
+        form,
     }))
 }
