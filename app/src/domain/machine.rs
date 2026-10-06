@@ -37,8 +37,11 @@ impl Machine {
         let mut context: Vec<_> = call_session.context().into_iter().collect();
         context.sort();
 
+        let mut schema = json_schema::<T>();
+        T::fit_schema(&mut schema, call_session);
+
         let system = self
-            .render_system_prompt::<T>(&context, call_session.get_conversation())
+            .render_system_prompt::<T>(&schema, &context, call_session.get_conversation())
             .expect("Could not render the system prompt");
         let user = render_xml(|w| {
             w.create_element("utterance").write_text_content(escaped(input))?;
@@ -50,9 +53,6 @@ impl Machine {
         let output = std::any::type_name::<T>().rsplit("::").next().unwrap_or_default();
 
         info!(call_id, output, "Machine prompt\n{system}\n{user}");
-
-        let mut schema = json_schema::<T>();
-        T::fit_schema(&mut schema, call_session);
 
         let answer = llm.query(&system, &user, output, &schema).await?;
 
@@ -68,8 +68,10 @@ impl Machine {
     /// `role` and `rules` are written verbatim, so they can refer to other
     /// sections by tag (`<allowed_values>`). Everything else is escaped, since
     /// it comes from the caller or a backend and must not be able to close a tag.
+    /// `schema` is the one the answer is held to: `<json_output_format>` shows its keys.
     fn render_system_prompt<T>(
         &self,
+        schema: &Value,
         context: &[(String, String)],
         conversation: &[CallTurn],
     ) -> io::Result<String>
@@ -128,7 +130,7 @@ impl Machine {
             }
 
             w.create_element("json_output_format")
-                .write_text_content(escaped(&format!("\n{}\n", json_output_format::<T>())))?;
+                .write_text_content(escaped(&format!("\n{}\n", json_output_format(schema))))?;
 
             if !conversation.is_empty() {
                 w.create_element("conversation_history").write_inner_content(|w| {
@@ -171,9 +173,16 @@ fn verbatim(text: &str) -> BytesText<'_> {
     BytesText::from_escaped(text)
 }
 
-/// Each output field with its JSON type, e.g. `{"detected_language": "string"}`.
-fn json_output_format<T: JsonSchema>() -> String {
-    format!("{:#}", Value::Object(field_types::<T>()))
+/// Each key of the schema with its JSON type, e.g. `{"detected_language": "string"}`.
+fn json_output_format(schema: &Value) -> String {
+    let fields: Map<String, Value> = schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, property)| (name.clone(), own_type(property)))
+        .collect();
+
+    format!("{:#}", Value::Object(fields))
 }
 
 /// The schema vLLM holds the answer to: the output's fields and no others, no empty
@@ -215,21 +224,22 @@ fn field_types<T: JsonSchema>() -> Map<String, Value> {
         .and_then(Value::as_object)
         .into_iter()
         .flatten()
-        .map(|(name, property)| {
-            // An `Option` field is `["string", "null"]` here, which the model copies as an
-            // array. It is left out when it has no value, so only its own type is shown.
-            let kind = match property.get("type") {
-                Some(Value::Array(kinds)) => kinds
-                    .iter()
-                    .find(|kind| kind.as_str() != Some("null"))
-                    .cloned()
-                    .unwrap_or_default(),
-                Some(kind) => kind.clone(),
-                None => property.clone(),
-            };
-            (name.clone(), kind)
-        })
+        .map(|(name, property)| (name.clone(), own_type(property)))
         .collect()
+}
+
+/// A property's type without `null`. An `Option` field is `["string", "null"]`, which the model
+/// copies as an array. It is left out when it has no value, so only its own type is shown.
+fn own_type(property: &Value) -> Value {
+    match property.get("type") {
+        Some(Value::Array(kinds)) => kinds
+            .iter()
+            .find(|kind| kind.as_str() != Some("null"))
+            .cloned()
+            .unwrap_or_default(),
+        Some(kind) => kind.clone(),
+        None => property.clone(),
+    }
 }
 
 fn root_schema<T: JsonSchema>() -> Value {
@@ -311,7 +321,8 @@ pub trait OutputFormat {
     fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_>;
 
     /// Called with the JSON schema the answer is held to, for what the call's state says the answer
-    /// can be, such as the fields of a form the caller can be answering now.
+    /// can be, such as the fields of the form in progress as its keys. `<json_output_format>` shows
+    /// the keys it leaves.
     fn fit_schema(_schema: &mut Value, _call_session: &CallSession) {}
 
     /// Called once the answer is parsed, for what else it tells, such as how sure the model was.

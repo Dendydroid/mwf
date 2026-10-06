@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use reqwest::Client;
 use crate::app::AppState;
-use crate::domain::call_session::CallSession;
+use crate::domain::call_session::{CallSession, CallState};
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use crate::event::form_completed::FormCompletedEvent;
 use tracing::log::error;
@@ -56,7 +56,13 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                     &event.app_state
                 ).await;
 
-                match Machine::main_menu_response_formulator()
+                // A turn that starts a form is the form's first one: its reply asks for the first step.
+                let formulator = match session.data.state {
+                    CallState::Idle => Machine::main_menu_response_formulator(),
+                    CallState::FormInProgress(..) => Machine::form_response_formulator(),
+                };
+
+                match formulator
                     .query::<FormulatedResponse>(
                         &self.llm,
                         &event.utterance,
@@ -75,11 +81,11 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                     }
                 }
             },
-            IntentMatched::Form(form_intent, form_value) => {
+            IntentMatched::Form(form_intent, form_values) => {
 
                 let completed_form = form_intent_context_handler(
                     &form_intent,
-                    &form_value,
+                    &form_values,
                     &event.utterance,
                     &mut session,
                     &self.http_client,

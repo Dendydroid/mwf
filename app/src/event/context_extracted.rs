@@ -84,7 +84,7 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
                     }
                 }
             },
-            FlowContext::Form(form_value) => {
+            FlowContext::Form(form_values) => {
                 let matched = Machine::form_intent_matcher()
                     .query::<ExtractedFormIntent>(
                         &self.llm,
@@ -102,7 +102,7 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
 
                         let mut intent_matched_event = IntentMatchedEvent::new(
                             &event.utterance,
-                            IntentMatched::Form(intent, form_value.clone()),
+                            IntentMatched::Form(intent, form_values.clone()),
                             event.call_session.clone(),
                             event.app_state.clone(),
                         );

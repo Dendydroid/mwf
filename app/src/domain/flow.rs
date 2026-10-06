@@ -5,21 +5,21 @@
 */
 use schemars::JsonSchema;
 use serde::Deserialize;
-use crate::domain::flow::form_flow::{ExtractedFormIntent, ExtractedFormValue};
+use crate::domain::flow::form_flow::{ExtractedFormIntent, ExtractedFormValues};
 use crate::domain::flow::main_menu_flow::{ExtractedMainMenuIntent, HintMap};
 use crate::domain::machine::{OutputFormat, ValueSchema};
 
 /// What the context extractor of the flow took from the utterance.
 pub enum FlowContext {
     MainMenu(HintMap),
-    Form(ExtractedFormValue),
+    Form(ExtractedFormValues),
 }
 
-/// What the intent matcher of the flow chose. In a form it comes with the extracted value,
-/// which only counts when the intent says the caller gave one.
+/// What the intent matcher of the flow chose. In a form it comes with the extracted values,
+/// which only count when the intent says the caller gave some.
 pub enum IntentMatched {
     MainMenu(ExtractedMainMenuIntent),
-    Form(ExtractedFormIntent, ExtractedFormValue),
+    Form(ExtractedFormIntent, ExtractedFormValues),
 }
 
 #[derive(JsonSchema, Deserialize, Default, Debug)]
@@ -109,6 +109,22 @@ pub mod main_menu_flow {
             }
         }
 
+        /// What the formulator is told when the caller asks about the form they filled out last in the
+        /// call: its summary, only if there is one.
+        pub fn last_filled_out_form_information(&self) -> String {
+            match &self.last_filled_out_form {
+                Some(form) => format!(
+                    "The caller asked about the form they filled out last in this call. Summarize it in one \
+                    or two sentences: the {} form with {}.",
+                    form.kind,
+                    form.values_summary()
+                ),
+                None => "The caller asked about a form they filled out in this call, but none was filled out \
+                    yet. Say so and summarize nothing."
+                    .to_string(),
+            }
+        }
+
         /// The hints the form has a field for, each as its field's kind reads it. A hint the kind
         /// cannot read is left out.
         fn form_values(&self, form: &Form) -> Vec<(&'static str, FormFieldValue)> {
@@ -172,6 +188,7 @@ pub mod main_menu_flow {
                 GetInformation {selected: GetInformationSupported::CalendarHelp},
                 GetInformation {selected: GetInformationSupported::GetCurrentUAHPerEUR},
                 GetInformation {selected: GetInformationSupported::GetCurrentWeatherInBerlin},
+                GetInformation {selected: GetInformationSupported::LastFilledOutFormInformation},
                 StartForm {form: FormSupported::DoctorAppointment},
                 Repeat,
                 EndCall,
@@ -280,6 +297,10 @@ pub mod main_menu_flow {
         let has_conversation_history = session.data.call_memory.conversation.len() > 0;
 
         let backend_context = match caller_intent {
+            // Not fetched: the call's own hints have the form.
+            CallerIntent::GetInformation { selected: GetInformationSupported::LastFilledOutFormInformation } => {
+                session.data.call_memory.hint_map.last_filled_out_form_information()
+            }
             CallerIntent::GetInformation { selected } => match selected.fetch(&http_client).await {
                 Ok(information) => information,
                 Err(e) => {
@@ -314,6 +335,7 @@ pub mod main_menu_flow {
                 let not_listed = [
                     CallerIntent::Unsupported,
                     CallerIntent::GetInformation { selected: GetInformationSupported::CalendarHelp },
+                    CallerIntent::GetInformation { selected: GetInformationSupported::LastFilledOutFormInformation },
                     CallerIntent::Repeat,
                     CallerIntent::EndCall,
                     CallerIntent::TransferToHuman,
@@ -363,6 +385,9 @@ pub mod main_menu_flow {
         let context = format!("Started the {form} form.");
         session.call_turn_context.insert("next_step".into(), next_step(&built));
         session.data.state = CallState::FormInProgress(built);
+        // Not shown to the formulator, like on a turn that puts a value into the form: the reply only asks
+        // for the first step (see `form_intent_context_handler`).
+        session.shows_form_state = false;
 
         context
     }
@@ -407,12 +432,12 @@ pub mod main_menu_flow {
 }
 
 pub mod form_flow {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use reqwest::Client;
     use schemars::JsonSchema;
     use lingua::Language;
     use serde::Deserialize;
-    use serde_json::{json, Value};
+    use serde_json::{json, Map, Value};
     use tracing::error;
     use crate::app::AppState;
     use crate::domain::call::{CallAction, CallerIntent, GetInformationSupported};
@@ -425,63 +450,37 @@ pub mod form_flow {
     /// After this many rejected values for one field, the caller is offered a human.
     const MAX_CONFIRMATION_FAILURES: u8 = 3;
 
+    /// What the utterance gives for the fields of the form, by the field's name: several values at
+    /// once, like `HintMap` in the main menu, with the fields of the form in progress as its keys.
     #[derive(JsonSchema, Deserialize, Default, Debug, Clone)]
-    struct FormFieldName(Option<String>);
+    pub struct ExtractedFormValues(HashMap<String, Option<String>>);
 
-    impl ValueSchema for FormFieldName {
-        fn valid_value_description(&self) -> &'static str {
-            "Name of the field in <form_state> that `form_field_value` is for. Set it only when the utterance gives \
-            a form value, otherwise leave `form_field` out"
+    impl ExtractedFormValues {
+        /// What the utterance gives for the field. An empty value counts as none.
+        pub fn value_of(&self, field: &str) -> Option<&str> {
+            self.0.get(field)?.as_deref().filter(|value| !value.is_empty())
         }
     }
 
-    #[derive(JsonSchema, Deserialize, Default, Debug, Clone)]
-    struct ExtractedValue(Option<String>);
-
-    impl ValueSchema for ExtractedValue {
-        fn valid_value_description(&self) -> &'static str {
-            "The value the caller gave for that field. Set it only when the caller gave one, otherwise leave \
-            `form_field_value` out. For a field of kind `date` write YYYY-MM-DD. For a field of kind \
-            `spoken_date` write the caller's words for the day in English and lowercase, such as \"next saturday\" \
-            or \"tomorrow\", without working the date out. For a field of kind `spoken_time` write the caller's \
-            words for the time of day the same way, such as \"in the morning\" or \"3 pm\". Write numbers as \
-            digits, yes and no as true and false, and text as the caller said it"
-        }
-    }
-
-    #[derive(JsonSchema, Deserialize, Default, Debug, Clone)]
-    pub struct ExtractedFormValue {
-        #[serde(default)]
-        form_field: FormFieldName,
-        #[serde(default)]
-        form_field_value: ExtractedValue,
-    }
-
-    impl ExtractedFormValue {
-        /// An empty name counts as left out.
-        pub fn form_field(&self) -> Option<&str> {
-            self.form_field.0.as_deref().filter(|name| !name.is_empty())
-        }
-
-        /// Same as [`Self::form_field`].
-        pub fn form_field_value(&self) -> Option<&str> {
-            self.form_field_value.0.as_deref().filter(|value| !value.is_empty())
-        }
-    }
-
-    impl OutputFormat for ExtractedFormValue {
+    impl OutputFormat for ExtractedFormValues {
+        /// The keys are not known before the call's form is: `fit_schema` adds them, and the
+        /// machine's rules say what to set them to.
         fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_> {
-            Box::new(vec![
-                ("form_field", &self.form_field as &dyn ValueSchema),
-                ("form_field_value", &self.form_field_value as &dyn ValueSchema),
-            ].into_iter())
+            Box::new(std::iter::empty())
         }
 
-        /// Holds `form_field` to the fields the caller can be answering. Asked for the day, the model files
-        /// "tomorrow at 3 pm" or a bare "morgen" under the time, and no rule talked it out of that.
+        /// One key per field of the form the utterance can give a value for, each a string or null like a
+        /// hint. See `Form::answerable_fields` for the field that is left out.
         fn fit_schema(schema: &mut Value, call_session: &CallSession) {
             if let CallState::FormInProgress(form) = &call_session.data.state {
-                schema["properties"]["form_field"]["enum"] = json!(form.answerable_fields());
+                let names = form.answerable_fields();
+
+                schema["properties"] = names
+                    .iter()
+                    .map(|name| (name.to_string(), json!({ "type": ["string", "null"], "minLength": 1 })))
+                    .collect::<Map<_, _>>()
+                    .into();
+                schema["required"] = json!(names);
             }
         }
     }
@@ -553,15 +552,26 @@ pub mod form_flow {
     }
 
     impl Machine {
-        pub fn form_context_extractor() -> Self {
+        /// `language` is the one the caller speaks: the days and times they say are kept in it. The model
+        /// follows the examples into their language, and translated a day wrongly without anyone noticing
+        /// ("übermorgen" came out as "next monday").
+        pub fn form_context_extractor(language: Language) -> Self {
+            let (said_in, day, time_of_day) = match language {
+                Language::German => ("German", "\"nächsten samstag\" or \"morgen\"", "\"am vormittag\" or \"15 uhr\""),
+                _ => ("English", "\"next saturday\" or \"tomorrow\"", "\"in the morning\" or \"3 pm\""),
+            };
+
             Self {
-                role: "You are a context extractor machine. The caller is filling in the form in <form_state>. You receive a <utterance> on the input and provide the form value it gives in a predefined <json_output_format> as output.".into(),
+                role: "You are a context extractor machine. The caller is filling in the form in <form_state>. You receive a <utterance> on the input and provide the form values it gives in a predefined <json_output_format> as output.".into(),
                 rules: vec![
-                    "Extract the value only from what <utterance> itself says. Never copy a value that is already in <form_state> or in <conversation_history>.".into(),
+                    "Each key of <json_output_format> is a field of <form_state>. Set it to the value <utterance> gives for that field, or to null when <utterance> gives none. One utterance can give values for several fields".into(),
+                    "A value the caller gives without saying what it is for is for the `current_field` of <form_state>, also when it comes with a denial or changes the value that field has".into(),
+                    format!("For a field of kind `date` write YYYY-MM-DD. For a field of kind `spoken_date` write the caller's words for the day in {said_in} and lowercase, such as {day}, without working the date out. For a field of kind `spoken_time` write the caller's words for the time of day the same way, such as {time_of_day}. Write numbers as digits, yes and no as true and false, and text as the caller said it"),
+                    "Extract the values only from what <utterance> itself says. Never copy a value that is already in <form_state> or in <conversation_history>.".into(),
                     "One exception is a value the caller points to instead of saying it, such as \"the same as before\": write the value they point to.".into(),
                     "The other is a value the caller changes only a part of: write the whole value with that part changed and the rest as it is in <form_state>. When <form_state> has 2001-04-09 and the caller says \"no, the tenth\" or \"yes, but in 2002\", write 2001-04-10 or 2002-04-09. When it has Maria Rossi and the caller says \"no, the last name is Russo\", write Maria Russo.".into(),
-                    "The value is for the `current_field` of <form_state>, unless the caller is changing a value they gave for another field.".into(),
-                    "If <utterance> gives no form value, such as a plain agreement or denial, a question or a request, remove both keys from <json_output_format>.".into(),
+                    "Each value must only be set once, in one key of <json_output_format>.".into(),
+                    "If <utterance> gives no form value, such as a plain agreement or denial, a question or a request, set every key to null.".into(),
                 ],
             }
         }
@@ -594,7 +604,7 @@ pub mod form_flow {
                     "Reply in the language given by <language> in <context>",
                     "Only ask one question in reply",
                     "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
-                    "Take <response_context> information into consideration when answering",
+                    "Follow <response_context> instructions when answering and take its content into consideration",
                     "When <next_step> is set in <context>, end the reply with that step and ask nothing \
                     else. To have a value confirmed, say what the value is for, read it back and ask plainly \
                     whether it is right",
@@ -614,7 +624,7 @@ pub mod form_flow {
     /// Returns the form once the caller has confirmed its last field: the call is back in the main menu then.
     pub async fn form_intent_context_handler(
         intent: &ExtractedFormIntent,
-        form_value: &ExtractedFormValue,
+        form_values: &ExtractedFormValues,
         utterance: &str,
         session: &mut CallSession,
         http_client: &Client,
@@ -629,12 +639,18 @@ pub mod form_flow {
             return None;
         };
 
-        // The extractor tends to write a value the form already has once more: the caller did not give that one.
-        let given_value = form_value
-            .form_field_value()
-            .filter(|value| !holds(form, form_value.form_field(), value));
+        // The form as the turn found it
+        let before = form.clone();
 
-        let mut backend_context = match caller_intent {
+        let given = given_values(form, form_values);
+        // What of it is for the field the caller is on
+        let for_current: Vec<_> = given
+            .iter()
+            .filter(|(name, _)| form.current_field().is_some_and(|current| current.name == *name))
+            .cloned()
+            .collect();
+
+        let backend_context = match caller_intent {
             CallerIntent::GetInformation { selected } => match selected.fetch(&http_client).await {
                 Ok(information) => information,
                 Err(e) => {
@@ -644,17 +660,23 @@ pub mod form_flow {
                 }
             },
             // A correction that comes without a value is only the denial.
-            CallerIntent::CorrectFormFieldValue if given_value.is_none() => reject(form),
-            // A correction never accepts the value that was read back, whichever field it is for.
-            CallerIntent::CorrectFormFieldValue => {
-                validate_and_fill(app_state, form, form_value.form_field(), given_value, false).await
-            }
+            CallerIntent::CorrectFormFieldValue if given.is_empty() => reject(form),
+            // A correction never accepts the value that was read back, whichever fields it is for.
+            CallerIntent::CorrectFormFieldValue => validate_and_fill(app_state, form, &given, false).await,
+            // An answer fills what the caller has not confirmed yet: a confirmed value takes a correction.
             CallerIntent::ProvideFormFieldValue | CallerIntent::ReferToContextForFormFieldValue => {
-                validate_and_fill(app_state, form, form_value.form_field(), given_value, true).await
+                let unconfirmed: Vec<_> = given
+                    .iter()
+                    .filter(|(name, _)| form.find_field(name).is_some_and(|field| field.state != StepState::Completed))
+                    .cloned()
+                    .collect();
+
+                validate_and_fill(app_state, form, &unconfirmed, true).await
             }
-            // "Yes, but it is 1992": an agreement that comes with another value does not confirm the one read back.
-            CallerIntent::ConfirmYes if replaces_read_back(form, form_value.form_field(), given_value, utterance) => {
-                validate_and_fill(app_state, form, form_value.form_field(), given_value, false).await
+            // "Yes, but it is 1992": an agreement that comes with another value does not confirm the one read
+            // back. Only that value is taken: on an agreement the extractor's other values are not the caller's.
+            CallerIntent::ConfirmYes if replaces_read_back(form, &for_current, utterance) => {
+                validate_and_fill(app_state, form, &for_current, false).await
             }
             CallerIntent::ConfirmYes => confirm(form),
             CallerIntent::ConfirmNo => reject(form),
@@ -708,6 +730,13 @@ pub mod form_flow {
             session.data.state = CallState::Idle;
         }
 
+        // The formulator is not shown the form on a turn that put a value into it. With the new value in the
+        // form in front of it, it takes that value for settled and asks for the next empty field, or reads
+        // back every value the form holds. On any other turn the form says what is settled: without it the
+        // reply asks once more whether the value the caller just confirmed is right.
+        session.shows_form_state =
+            !matches!(&session.data.state, CallState::FormInProgress(form) if form.holds_new_value(&before));
+
         session.call_turn_context.insert(
             "response_context".into(),
             backend_context
@@ -738,33 +767,40 @@ pub mod form_flow {
         }
     }
 
-    /// The field the extractor named, or the current one when it named none that exists.
-    fn target<'a>(form: &'a Form, field: Option<&str>) -> Option<&'a FormField> {
-        field
-            .and_then(|name| form.find_field(name))
-            .or_else(|| form.current_field())
+    /// The values the caller gave, each with the name of its field, in the order of the form's fields.
+    /// The extractor tends to write a value the form already has once more: the caller did not give that one.
+    fn given_values(form: &Form, values: &ExtractedFormValues) -> Vec<(String, String)> {
+        form.fields
+            .iter()
+            .filter_map(|field| {
+                let value = values.value_of(&field.name).filter(|value| !holds(field, value))?;
+
+                Some((field.name.clone(), value.to_string()))
+            })
+            .collect()
     }
 
-    /// Whether the field the value is for has this value.
-    fn holds(form: &Form, field: Option<&str>, value: &str) -> bool {
-        target(form, field)
-            .and_then(|field| field.value.as_ref())
+    /// Whether the field has this value.
+    fn holds(field: &FormField, value: &str) -> bool {
+        field
+            .value
+            .as_ref()
             .is_some_and(|held| held.to_string().to_lowercase() == value.to_lowercase())
     }
 
-    /// Whether the caller gave `value` in place of the one that was read back to them, in an utterance the
-    /// matcher took for an agreement. That has to be sure, because the extractor also writes the value the
-    /// form has once more in its own words: it named the field, the field's kind can read the value, and
-    /// what is new in a text are words the caller just said. Never for a yes or no field, where the
-    /// agreement itself is written as a value.
-    fn replaces_read_back(form: &Form, field: Option<&str>, value: Option<&str>, utterance: &str) -> bool {
-        let Some((current, value)) = form.current_field().zip(value) else {
+    /// Whether the caller gave a value in place of the one that was read back to them, in an utterance the
+    /// matcher took for an agreement. `for_current` is what the extractor wrote for the current field.
+    /// That has to be sure, because the extractor also writes the value the form has once more in its own
+    /// words: the field's kind can read the value, and what is new in a text are words the caller just
+    /// said. Never for a yes or no field, where the agreement itself is written as a value.
+    fn replaces_read_back(form: &Form, for_current: &[(String, String)], utterance: &str) -> bool {
+        let Some((current, (_, value))) = form.current_field().zip(for_current.first()) else {
             return false;
         };
         let (Some(held), Some(given)) = (current.value.as_ref(), current.kind.parse(value)) else {
             return false;
         };
-        if current.state != StepState::AwaitingConfirmation || field != Some(current.name.as_str()) {
+        if current.state != StepState::AwaitingConfirmation {
             return false;
         }
 
@@ -790,73 +826,85 @@ pub mod form_flow {
             .collect()
     }
 
-    /// `fill`, once the validators of the field the value is for had their say about it.
+    /// `fill`, once the validators of each field a value is for had their say about it.
     async fn validate_and_fill(
         app_state: &AppState,
         form: &mut Form,
-        field: Option<&str>,
-        value: Option<&str>,
+        given: &[(String, String)],
         moves_on: bool,
     ) -> String {
-        let read = target(form, field)
-            .zip(value)
-            .and_then(|(target, text)| Some((target, target.kind.parse(text)?)));
+        let mut refused = Vec::new();
 
-        let refused = match read {
-            Some((target, parsed)) => form.kind.validate(app_state, &target.name, &parsed).await.err(),
-            None => None,
-        };
+        for (name, text) in given {
+            refused.push(match form.find_field(name).and_then(|field| field.kind.parse(text)) {
+                Some(parsed) => form.kind.validate(app_state, name, &parsed).await.err(),
+                None => None,
+            });
+        }
 
-        fill(form, field, value, moves_on, refused)
+        fill(form, given, moves_on, refused)
     }
 
-    /// Fills the field the value is for. `moves_on` says whether a value for a later field accepts the
-    /// one read back for the current field. `refused` is what the field's validators have against the value.
+    /// Fills every field the caller gave a value for, each then waiting for their confirmation. `moves_on`
+    /// says whether values for later fields accept the one read back for the current field. `refused` is
+    /// what the validators of each value's field have against it, in the order of `given`.
     fn fill(
         form: &mut Form,
-        field: Option<&str>,
-        value: Option<&str>,
+        given: &[(String, String)],
         moves_on: bool,
-        refused: Option<ValidationError>,
+        refused: Vec<Option<ValidationError>>,
     ) -> String {
-        let Some(target) = target(form, field) else {
+        let Some(current) = form.current_field() else {
             return "The form has no field left to fill.".to_string();
         };
-        let (name, kind) = (target.name.clone(), target.kind);
-        let was_read_back = target.state == StepState::AwaitingConfirmation
-            && form.current_field().is_some_and(|current| current.name == name);
+        let (current, was_read_back) = (current.name.clone(), current.state == StepState::AwaitingConfirmation);
 
-        let Some(text) = value else {
-            return format!("The caller gave no value for {name}.");
-        };
-
-        // A refused value is not recorded. In place of the one that was read back it still says
-        // that one is wrong, like a value that cannot be read.
-        if let Some(ValidationError(reason)) = refused {
-            if was_read_back {
-                form.reject_current();
-            }
-
-            return format!("\"{text}\" was not recorded for {name}. {reason}");
+        if given.is_empty() {
+            return format!("The caller gave no value for {current}.");
         }
 
-        // Parsed with the field's own kind, so filling it cannot fail.
-        match kind.parse(text) {
-            Some(parsed) => {
-                // Answering a later field means the caller moved on from the value read back for the
-                // current one, which accepts it.
-                if moves_on && form.is_ahead(&name) {
-                    form.confirm_current();
+        let mut context = Vec::new();
+        let mut read = Vec::new();
+
+        for ((name, text), refused) in given.iter().zip(refused) {
+            let Some(kind) = form.find_field(name).map(|field| field.kind) else {
+                continue;
+            };
+
+            // Parsed with the field's own kind, so filling it cannot fail.
+            match (refused, kind.parse(text)) {
+                // A refused value is not recorded. In place of the one that was read back it still says
+                // that one is wrong, like a value that cannot be read.
+                (Some(ValidationError(reason)), _) => {
+                    if *name == current {
+                        form.reject_current();
+                    }
+
+                    context.push(format!("\"{text}\" was not recorded for {name}. {reason}"));
                 }
-                form.fill_field(&name, parsed);
-
-                format!("Recorded \"{text}\" for {name}.")
+                (None, Some(parsed)) => {
+                    read.push((name, parsed));
+                    context.push(format!("Recorded \"{text}\" for {name}."));
+                }
+                // Another value in place of the one that was read back says that one is wrong, even when
+                // the new one cannot be read. Keeping it would only have the same answer come again.
+                (None, None) if *name == current && was_read_back => context.push(reject(form)),
+                (None, None) => context.push(format!("Could not understand \"{text}\" as a {kind:?} value for {name}.")),
             }
-            // Another value in place of the one that was read back says that one is wrong, even when
-            // the new one cannot be read. Keeping it would only have the same answer come again.
-            None if was_read_back => reject(form),
-            None => format!("Could not understand \"{text}\" as a {kind:?} value for {name}."),
         }
+
+        // Answering later fields without a word about the current one means the caller moved on from the
+        // value read back for it, which accepts it.
+        let says_current = given.iter().any(|(name, _)| *name == current);
+        if moves_on && !says_current && read.iter().any(|(name, _)| form.is_ahead(name)) {
+            form.confirm_current();
+        }
+
+        for (name, parsed) in read {
+            form.fill_field(name, parsed);
+        }
+
+        context.join(" ")
     }
 
     fn confirm(form: &mut Form) -> String {
@@ -881,7 +929,7 @@ pub mod form_flow {
                 }
             }
             // A yes to a yes-or-no field is its value, not a confirmation. Validators are not asked about it.
-            (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("true"), false, None),
+            (StepState::Queued, FormFieldKind::Bool) => fill(form, &[(name, "true".to_string())], false, vec![None]),
             _ => format!("The caller said yes, but {name} has no value to confirm yet."),
         }
     }
@@ -906,7 +954,7 @@ pub mod form_flow {
                     format!("The caller said the value for {name} is wrong, so it was dropped. Apologize for the mistake.")
                 }
             }
-            (StepState::Queued, FormFieldKind::Bool) => fill(form, Some(&name), Some("false"), false, None),
+            (StepState::Queued, FormFieldKind::Bool) => fill(form, &[(name, "false".to_string())], false, vec![None]),
             _ => format!("The caller said no, but {name} has no value to reject."),
         }
     }
@@ -916,44 +964,95 @@ pub mod form_flow {
         use super::*;
         use crate::domain::call::FormSupported;
 
+        fn given(values: &[(&str, &str)]) -> Vec<(String, String)> {
+            values.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect()
+        }
+
+        /// `fill` with no validator against any of the values.
+        fn fill_all(form: &mut Form, values: &[(&str, &str)], moves_on: bool) -> String {
+            fill(form, &given(values), moves_on, values.iter().map(|_| None).collect())
+        }
+
         /// The doctor form with the name confirmed and the date of birth read back to the caller.
         fn form() -> Form {
             let mut form = FormSupported::DoctorAppointment.build();
-            fill(&mut form, Some("patient_name"), Some("John Smith"), true, None);
+            fill_all(&mut form, &[("patient_name", "John Smith")], true);
             form.confirm_current();
-            fill(&mut form, Some("date_of_birth"), Some("1991-06-13"), true, None);
+            fill_all(&mut form, &[("date_of_birth", "1991-06-13")], true);
 
             form
+        }
+
+        fn state(form: &Form, name: &str) -> StepState {
+            form.find_field(name).unwrap().state
+        }
+
+        #[test]
+        fn one_utterance_fills_several_fields_and_each_waits_for_its_confirmation() {
+            let mut form = FormSupported::DoctorAppointment.build();
+            let context = fill_all(
+                &mut form,
+                &[("patient_name", "John Smith"), ("reason", "headache"), ("appointment_time", "at noon")],
+                true,
+            );
+
+            assert_eq!(
+                context,
+                "Recorded \"John Smith\" for patient_name. Recorded \"headache\" for reason. \
+                Recorded \"at noon\" for appointment_time."
+            );
+            assert_eq!(next_step(&form), "Next, ask the caller to confirm that Full name of the patient is John Smith.");
+
+            // The fields in between are still asked for, the filled ones only have to be confirmed
+            form.confirm_current();
+            assert_eq!(next_step(&form), "Next, ask the caller for: Patient's date of birth.");
+            fill_all(&mut form, &[("date_of_birth", "1991-06-13")], true);
+            form.confirm_current();
+            assert_eq!(next_step(&form), "Next, ask the caller to confirm that Reason for the visit is headache.");
+            form.confirm_current();
+            assert_eq!(next_step(&form), "Next, ask the caller for: Date of the appointment.");
+            assert_eq!(state(&form, "appointment_time"), StepState::AwaitingConfirmation);
+        }
+
+        #[test]
+        fn values_the_form_already_holds_were_not_given() {
+            let form = form();
+            let values: ExtractedFormValues = serde_json::from_str(
+                r#"{"patient_name": "john smith", "date_of_birth": "1991-06-13", "reason": "headache", "appointment_date": null}"#,
+            )
+            .unwrap();
+
+            assert_eq!(given_values(&form, &values), given(&[("reason", "headache")]));
         }
 
         #[test]
         fn agreement_with_another_date_replaces_the_one_read_back() {
             let form = form();
-            let field = Some("date_of_birth");
+            let date = |value| given(&[("date_of_birth", value)]);
 
-            assert!(replaces_read_back(&form, field, Some("1992-06-13"), "yes, but it's 1992"));
-            // The same date, a part of a date, and a date the extractor named no field for
-            assert!(!replaces_read_back(&form, field, Some("1991-06-13"), "yes, June 13th 1991"));
-            assert!(!replaces_read_back(&form, field, Some("1992"), "yes, but it's 1992"));
-            assert!(!replaces_read_back(&form, None, Some("1992-06-13"), "yes, but it's 1992"));
+            assert!(replaces_read_back(&form, &date("1992-06-13"), "yes, but it's 1992"));
+            // The same date, a part of a date, and nothing written for the field
+            assert!(!replaces_read_back(&form, &date("1991-06-13"), "yes, June 13th 1991"));
+            assert!(!replaces_read_back(&form, &date("1992"), "yes, but it's 1992"));
+            assert!(!replaces_read_back(&form, &[], "yes, but it's 1992"));
         }
 
         #[test]
         fn agreement_with_another_text_replaces_it_only_in_words_the_caller_said() {
             let mut form = FormSupported::DoctorAppointment.build();
-            fill(&mut form, None, Some("John Smith"), true, None);
-            let field = Some("patient_name");
+            fill_all(&mut form, &[("patient_name", "John Smith")], true);
+            let name = |value| given(&[("patient_name", value)]);
 
-            assert!(replaces_read_back(&form, field, Some("John Smyth"), "Yes, but it's Smyth with a y"));
+            assert!(replaces_read_back(&form, &name("John Smyth"), "Yes, but it's Smyth with a y"));
             // The extractor writing the name once more in its own way, and a name with nothing new in it
-            assert!(!replaces_read_back(&form, field, Some("Jon Smith"), "yes"));
-            assert!(!replaces_read_back(&form, field, Some("Smith"), "yes, Smith"));
+            assert!(!replaces_read_back(&form, &name("Jon Smith"), "yes"));
+            assert!(!replaces_read_back(&form, &name("Smith"), "yes, Smith"));
         }
 
         #[test]
         fn unreadable_value_in_place_of_the_one_read_back_drops_it() {
             let mut form = form();
-            fill(&mut form, Some("date_of_birth"), Some("1992"), false, None);
+            fill_all(&mut form, &[("date_of_birth", "1992")], false);
 
             let field = form.find_field("date_of_birth").unwrap();
             assert_eq!(
@@ -964,11 +1063,11 @@ pub mod form_flow {
 
         #[test]
         fn refused_value_is_not_recorded_and_drops_the_one_read_back() {
-            let refused = || Some(ValidationError("Tell the caller why.".into()));
+            let refused = || vec![Some(ValidationError("Tell the caller why.".into()))];
             let field = |form: &Form, name: &str| form.find_field(name).unwrap().clone();
 
             let mut replaced = form();
-            let context = fill(&mut replaced, Some("date_of_birth"), Some("2091-06-13"), false, refused());
+            let context = fill(&mut replaced, &given(&[("date_of_birth", "2091-06-13")]), false, refused());
             assert_eq!(context, "\"2091-06-13\" was not recorded for date_of_birth. Tell the caller why.");
             assert_eq!(
                 (field(&replaced, "date_of_birth").state, field(&replaced, "date_of_birth").value),
@@ -977,22 +1076,29 @@ pub mod form_flow {
 
             // For a later field it neither accepts the value read back nor drops it
             let mut moved_on = form();
-            fill(&mut moved_on, Some("reason"), Some("headache"), true, refused());
+            fill(&mut moved_on, &given(&[("reason", "headache")]), true, refused());
             assert_eq!(field(&moved_on, "date_of_birth").state, StepState::AwaitingConfirmation);
             assert_eq!(field(&moved_on, "reason").value, None);
         }
 
         #[test]
         fn only_moving_on_accepts_the_value_read_back() {
-            let state = |form: &Form| form.find_field("date_of_birth").unwrap().state;
-
             let mut corrected = form();
-            fill(&mut corrected, Some("reason"), Some("headache"), false, None);
-            assert_eq!(state(&corrected), StepState::AwaitingConfirmation);
+            fill_all(&mut corrected, &[("reason", "headache")], false);
+            assert_eq!(state(&corrected, "date_of_birth"), StepState::AwaitingConfirmation);
 
+            // Several later fields accept it once: none of them is taken for read back and accepted too
             let mut moved_on = form();
-            fill(&mut moved_on, Some("reason"), Some("headache"), true, None);
-            assert_eq!(state(&moved_on), StepState::Completed);
+            fill_all(&mut moved_on, &[("reason", "headache"), ("appointment_date", "tomorrow")], true);
+            assert_eq!(state(&moved_on, "date_of_birth"), StepState::Completed);
+            assert_eq!(state(&moved_on, "reason"), StepState::AwaitingConfirmation);
+            assert_eq!(state(&moved_on, "appointment_date"), StepState::AwaitingConfirmation);
+
+            // A new value for the field itself is not moving on from it
+            let mut replaced = form();
+            fill_all(&mut replaced, &[("date_of_birth", "1992-06-13"), ("reason", "headache")], true);
+            assert_eq!(state(&replaced, "date_of_birth"), StepState::AwaitingConfirmation);
+            assert_eq!(state(&replaced, "reason"), StepState::AwaitingConfirmation);
         }
     }
 }

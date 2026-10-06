@@ -7,7 +7,7 @@ use crate::app::AppState;
 use crate::classifier::detect_language;
 use crate::domain::call_session::{CallSession, CallState};
 use crate::domain::flow::FlowContext;
-use crate::domain::flow::form_flow::ExtractedFormValue;
+use crate::domain::flow::form_flow::ExtractedFormValues;
 use crate::domain::flow::main_menu_flow::HintMap;
 use crate::domain::machine::Machine;
 use crate::event::context_extracted::ContextExtractedEvent;
@@ -84,17 +84,17 @@ impl EventHandler<CallerSpokeEvent> for CallerSpokeHandler {
             },
             // During form extraction
             CallState::FormInProgress(..) => {
-                match Machine::form_context_extractor()
-                    .query::<ExtractedFormValue>(
+                match Machine::form_context_extractor(session.data.language)
+                    .query::<ExtractedFormValues>(
                         &self.llm,
                         &event.utterance,
                         &session,
                     )
                     .await {
-                    Ok(form_value) => {
-                        info!("Extracted FORM context: {:?}", form_value);
+                    Ok(form_values) => {
+                        info!("Extracted FORM context: {:?}", form_values);
 
-                        Some(FlowContext::Form(form_value))
+                        Some(FlowContext::Form(form_values))
                     }
                     Err(vllm_error) => {
                         error!("vLLM error extracting form context: {:?}", vllm_error);

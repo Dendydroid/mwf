@@ -107,7 +107,7 @@ CONTENT = re.compile(r'content="(.*)"\s*$', re.S)
 
 MACHINES = {
     "HintMap": "context_extractor",
-    "ExtractedFormValue": "context_extractor",
+    "ExtractedFormValues": "context_extractor",
     "ExtractedMainMenuIntent": "intent_matcher",
     "ExtractedFormIntent": "intent_matcher",
     "FormulatedResponse": "response_formulator",
@@ -233,7 +233,7 @@ def stages_of(records):
     answers = {record.machine: record for record in records if record.kind == "answered"}
 
     if handling and prompts:
-        stages["flow"] = "form" if prompts[0].output == "ExtractedFormValue" else "main menu"
+        stages["flow"] = "form" if prompts[0].output == "ExtractedFormValues" else "main menu"
         stages["language_detection_ms"] = milliseconds(handling.at, prompts[0].at)
 
     for prompt in prompts:

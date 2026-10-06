@@ -41,9 +41,9 @@ prompt with `-r 3` or more and read the pass rates.
 
 | Suite | Goldens | What |
 |---|---|---|
-| `test_main_menu.py` | 23 de, 14 en | Weather, exchange rate, starting the form (also from symptoms alone), the calendar refusal, repeat, end call, transfer, and requests that are close to a supported one but not the same |
+| `test_main_menu.py` | 24 de, 15 en | Weather, exchange rate, starting the form (also from symptoms alone), the calendar refusal, repeat, end call, transfer, requests that are close to a supported one but not the same, and a question about a booking when no form was filled out yet |
 | `test_hints.py` | 8 de, 6 en | What the caller says before the form: taken as hints, kept over turns, put into the started form to be confirmed, left out when a validator refuses it |
-| `test_form.py` | 60 de, 25 en | One answer at one point of the doctor form: a value, yes, no, "no, it is …", "yes, but …", a value for the next field, the date and the time of the appointment said in one answer, a question about the form, an outside request, repeat, cancel, transfer, end call, the date-of-birth validator, completing the form, and the main menu after a completed form, where the hints hold its values and a second form starts with them |
+| `test_form.py` | 64 de, 26 en | One answer at one point of the doctor form: a value, yes, no, "no, it is …", "yes, but …", a value for the next field, several values in one answer (also the date and the time of the appointment), a question about the form, an outside request, repeat, cancel, transfer, end call, the date-of-birth validator, completing the form, and the main menu after a completed form, where the hints hold its values, a second form starts with them and a question about the booking gets its summary |
 | `test_conversations.py` | 9 de, 3 en | Whole calls: booking with full sentences, with short answers, with hints, with corrections, three rejections and the offer of a human, interruptions, a value the caller points to, a change of language |
 | `test_api.py` | 10 | Bad requests, the keys of the response, the session and its sliding expiry, one turn of a call at a time, a turn that fails on the app's side, what becomes of a completed form |
 

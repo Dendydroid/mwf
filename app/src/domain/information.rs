@@ -35,6 +35,8 @@ impl GetInformationSupported {
             // Nothing to fetch for these two: the first is turned down, the second is answered from the form state.
             GetInformationSupported::CalendarHelp => Ok("The caller asked about dates or the calendar, which you cannot help with. Say you are sorry that you cannot help with dates".into()),
             GetInformationSupported::FormInformation => Ok("The caller asked about the form. Answer it in one sentence, then say the next step in a sentence of its own.".to_string()),
+            // Not fetched either: the main menu answers it from the call's hints, see `HintMap::last_filled_out_form_information`.
+            GetInformationSupported::LastFilledOutFormInformation => anyhow::bail!("{self} is answered from the hints of the call"),
         }
     }
 }

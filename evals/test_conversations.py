@@ -90,11 +90,13 @@ GOLDENS = [
             ("Ja, das stimmt.", dict(intent="confirm_yes", form={"date_of_birth": ["completed", "1991-06-13"]})),
             ("Er hat Rückenschmerzen.", dict(intent=PROVIDE, form={"reason": ["awaiting_confirmation", has("rückenschmerzen")]})),
             ("Ja, genau.", dict(intent="confirm_yes", form={"reason": ["completed", ANY]})),
-            # The date and the time in one answer: the date is taken, and the time is asked for and said again
-            ("Übermorgen um neun Uhr.", dict(intent=PROVIDE, form={"appointment_date": ["awaiting_confirmation", ANY],
-                                                                  "appointment_time": ["queued", None]})),
-            ("Ja, das passt.", dict(intent="confirm_yes", form={"appointment_date": ["completed", ANY], "appointment_time": ["queued", None]})),
-            ("Um neun Uhr.", dict(intent=PROVIDE, form={"appointment_time": ["awaiting_confirmation", has(("9", "neun", "nine"))]})),
+            # The date and the time in one answer: both are recorded, and each is confirmed with a yes of its own
+            ("Übermorgen um neun Uhr.", dict(intent=PROVIDE, form={
+                "appointment_date": ["awaiting_confirmation", has("übermorgen")],
+                "appointment_time": ["awaiting_confirmation", has(("9", "neun", "nine"))]})),
+            ("Ja, das passt.", dict(intent="confirm_yes", form={
+                "appointment_date": ["completed", ANY],
+                "appointment_time": ["awaiting_confirmation", has(("9", "neun", "nine"))]})),
             ("Ja, das ist gut so.", dict(
                 intent="confirm_yes", form="none", asks="anything_else",
                 completed={"patient_name": "Hans Möller", "date_of_birth": "1991-06-13", "reason": has("rückenschmerzen"),
@@ -211,11 +213,13 @@ GOLDENS = [
             ("Yes", dict(intent="confirm_yes", form={"date_of_birth": ["completed", "1992-06-13"]})),
             ("A sore throat", dict(intent=PROVIDE, form={"reason": ["awaiting_confirmation", has("sore throat")]})),
             ("Yes", dict(intent="confirm_yes", form={"reason": ["completed", ANY]})),
-            # The date and the time in one answer: the date is taken, and the time is asked for and said again
-            ("Tomorrow at 3 pm", dict(intent=PROVIDE, form={"appointment_date": ["awaiting_confirmation", has("tomorrow")],
-                                                           "appointment_time": ["queued", None]})),
-            ("Yes", dict(intent="confirm_yes", form={"appointment_date": ["completed", ANY], "appointment_time": ["queued", None]})),
-            ("3 pm", dict(intent=PROVIDE, form={"appointment_time": ["awaiting_confirmation", has(("3", "15"))]})),
+            # The date and the time in one answer: both are recorded, and each is confirmed with a yes of its own
+            ("Tomorrow at 3 pm", dict(intent=PROVIDE, form={
+                "appointment_date": ["awaiting_confirmation", has("tomorrow")],
+                "appointment_time": ["awaiting_confirmation", has(("3", "15"))]})),
+            ("Yes", dict(intent="confirm_yes", form={
+                "appointment_date": ["completed", ANY],
+                "appointment_time": ["awaiting_confirmation", has(("3", "15"))]})),
             ("Yes", dict(
                 intent="confirm_yes", form="none", asks="anything_else",
                 completed={"patient_name": "John Smyth", "date_of_birth": "1992-06-13", "reason": has("sore throat"),

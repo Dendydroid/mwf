@@ -190,18 +190,30 @@ impl Form {
         matches!((current, target), (Some(current), Some(target)) if target > current)
     }
 
-    /// The fields the caller can be giving a value for. While the current field has no value they were
-    /// asked for it, so the fields after it are left out: an answer can fit one of those as well, such
-    /// as a day said with a time. Once its value is read back, any field can follow.
-    pub fn answerable_fields(&self) -> Vec<&str> {
-        let asked_for = self
-            .fields
+    /// Whether a field holds a value it does not hold in `before`, the same form at an earlier point.
+    pub fn holds_new_value(&self, before: &Form) -> bool {
+        self.fields
             .iter()
-            .position(|field| field.state != StepState::Completed)
-            .filter(|&current| self.fields[current].state == StepState::Queued);
-        let answerable = asked_for.map_or(self.fields.len(), |current| current + 1);
+            .zip(&before.fields)
+            .any(|(field, was)| field.value.is_some() && field.value != was.value)
+    }
 
-        self.fields[..answerable].iter().map(|field| field.name.as_str()).collect()
+    /// The fields an utterance can give a value for. While the caller is on a field, a later field that
+    /// takes a like kind of value is left out: what is said for the current one fits the later one as
+    /// well, such as a day said for the date of birth, which is then filed under the date of the
+    /// appointment. Not when the current field takes text: a text is told apart by what it is about.
+    pub fn answerable_fields(&self) -> Vec<&str> {
+        let current = self.fields.iter().position(|field| field.state != StepState::Completed);
+
+        self.fields
+            .iter()
+            .enumerate()
+            .filter(|(index, field)| match current.map(|current| (current, self.fields[current].kind)) {
+                Some((current, on)) if *index > current => on == FormFieldKind::String || !on.is_like(field.kind),
+                _ => true,
+            })
+            .map(|(_, field)| field.name.as_str())
+            .collect()
     }
 
     /// Sets a field's value, which the caller then has to confirm. A completed
@@ -351,16 +363,39 @@ mod tests {
     }
 
     #[test]
-    fn later_fields_cannot_be_answered_while_the_current_one_is_asked_for() {
+    fn later_field_of_a_like_kind_cannot_be_answered_from_the_current_one() {
+        let all = ["patient_name", "date_of_birth", "reason", "appointment_date", "appointment_time"];
         let mut form = FormSupported::DoctorAppointment.build();
-        assert_eq!(form.answerable_fields(), ["patient_name"]);
+        // On a text field every field can be answered
+        assert_eq!(form.answerable_fields(), all);
 
-        // Read back to the caller, who can go on to any field from there
+        // On the date of birth a day is not for the appointment, asked for or read back
         form.fill_field("patient_name", FormFieldValue::String("John Smith".into()));
-        assert_eq!(form.answerable_fields().len(), form.fields.len());
+        form.confirm_current();
+        let without_the_other_date = ["patient_name", "date_of_birth", "reason", "appointment_time"];
+        assert_eq!(form.answerable_fields(), without_the_other_date);
+        form.fill_field("date_of_birth", FormFieldKind::Date.parse("1991-06-13").unwrap());
+        assert_eq!(form.answerable_fields(), without_the_other_date);
 
         form.confirm_current();
-        assert_eq!(form.answerable_fields(), ["patient_name", "date_of_birth"]);
+        assert_eq!(form.answerable_fields(), all);
+    }
+
+    #[test]
+    fn only_a_recorded_value_is_new_to_the_form() {
+        let mut form = FormSupported::DoctorAppointment.build();
+        let before = form.clone();
+        form.fill_field("patient_name", FormFieldValue::String("John Smith".into()));
+        assert!(form.holds_new_value(&before));
+
+        // Confirming a value or dropping it puts none into the form
+        let before = form.clone();
+        form.confirm_current();
+        assert!(!form.holds_new_value(&before));
+        form.fill_field("date_of_birth", FormFieldKind::Date.parse("1991-06-13").unwrap());
+        let before = form.clone();
+        form.reject_current();
+        assert!(!form.holds_new_value(&before));
     }
 
     #[test]

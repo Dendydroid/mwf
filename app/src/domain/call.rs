@@ -50,6 +50,8 @@ flat_enum! {
         CalendarHelp,
         // Questions about the form in progress, answered from its state
         FormInformation,
+        // Questions about the form the caller filled out last in the call, answered with its summary
+        LastFilledOutFormInformation,
     }
 }
 
@@ -151,6 +153,9 @@ impl Described for CallerIntent {
                 as which date next Saturday is",
             CallerIntent::GetInformation { selected: FormInformation } => "A question about the form or the \
                 values the caller gave, such as \"what name did you record\" or \"did you book it\"",
+            CallerIntent::GetInformation { selected: LastFilledOutFormInformation } => "A question about \
+                what the caller filled out or booked in this call, such as \"what did I book\" or \"which name \
+                did you write down\". The last filled out form is summarized only if there is one (it is not None)",
             CallerIntent::StartForm { form: FormSupported::DoctorAppointment } => "The caller either explicitly states that he wants to book \
                 a doctor's appointment or describes the symptoms which also most probably means he wants a doctor's appointment",
             CallerIntent::ProvideFormFieldValue => "An answer to the `current_field` of <form_state> when it \
@@ -179,6 +184,7 @@ impl Display for GetInformationSupported {
             GetInformationSupported::GetCurrentUAHPerEUR => "get_current_uah_per_eur",
             GetInformationSupported::CalendarHelp => "calendar_help",
             GetInformationSupported::FormInformation => "form_information",
+            GetInformationSupported::LastFilledOutFormInformation => "last_filled_out_form_information",
         })
     }
 }

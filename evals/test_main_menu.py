@@ -11,6 +11,7 @@ WEATHER = "get_information[get_current_weather_in_berlin]"
 RATE = "get_information[get_current_uah_per_eur]"
 CALENDAR = "get_information[calendar_help]"
 DOCTOR = "start_form[doctor_appointment]"
+LAST_FORM = "get_information[last_filled_out_form_information]"
 
 DEGREES = [["Grad", "°", "degree"]]
 HRYVNIA = [["hryw", "hriw", "griw", "gryw", "hryv", "griv", "UAH"], ["Euro", "EUR"]]
@@ -81,6 +82,10 @@ GOLDENS = [
     golden("repeat-de-nothing-said", "Können Sie das bitte wiederholen?", lang="de", capability="repeat",
            intent=["repeat", "unsupported"], context=["not supported"], says=OFFER_DE),
 
+    # Asked about a booking before any form was filled out, the caller hears that there is none
+    golden("last-form-de-none", "Was habe ich gebucht?", lang="de", capability="last filled out form",
+           intent=LAST_FORM, context=["none was filled out yet"]),
+
     # ── English ────────────────────────────────────────────────────────────────────────────────────
     golden("weather-en-1", "What's the weather like in Berlin?", lang="en", capability="weather",
            intent=WEATHER, context=["Current weather in Berlin"], says=DEGREES),
@@ -117,6 +122,9 @@ GOLDENS = [
 
     golden("repeat-en", "Sorry, could you repeat that?", after=["What's the weather like in Berlin?"],
            lang="en", capability="repeat", intent="repeat", context=["asked to hear your last reply"], says=DEGREES),
+
+    golden("last-form-en-none", "What did I book?", lang="en", capability="last filled out form",
+           intent=LAST_FORM, context=["none was filled out yet"]),
 ]
 
 

@@ -752,7 +752,17 @@
     stopRecognition();
     setStatus("speaking", "Speaking…");
 
+    const voices = window.speechSynthesis.getVoices();
+    const bestVoice = voices.find(v => v.name.includes("Natural") && v.lang.startsWith(lang)) ||
+            voices.find(v => v.name.includes("Google") && v.lang.startsWith(lang)) ||
+            voices.find(v => !v.localService && v.lang.startsWith(lang));
+
     const utterance = new SpeechSynthesisUtterance(text);
+
+    if (bestVoice) {
+      utterance.voice = bestVoice;
+    }
+
     utterance.lang = lang;
     utterance.onend = utterance.onerror = then;
 

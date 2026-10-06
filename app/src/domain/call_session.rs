@@ -30,6 +30,10 @@ pub struct CallSession {
     // Current time, service name, phone number, what was done on backend, info from backend
     pub call_turn_context: HashMap<String, String>,
 
+    // Whether the form in progress goes into the context. The intent handler says so for the response
+    // formulator, the way it writes `response_context`
+    pub shows_form_state: bool,
+
     // What the turn came to besides the spoken response
     pub call_turn_outcome: CallTurnOutcome,
 
@@ -88,6 +92,7 @@ impl CallSession {
             state_before_turn: data.state.clone(),
             call_id: call_id.into(),
             call_turn_context: Default::default(),
+            shows_form_state: true,
             call_turn_outcome: Default::default(),
             data,
         }
@@ -170,7 +175,7 @@ impl CallSession {
     pub fn context(&self) -> HashMap<String, String> {
         let mut context = self.call_turn_context.clone();
 
-        if let CallState::FormInProgress(form) = &self.data.state {
+        if let (CallState::FormInProgress(form), true) = (&self.data.state, self.shows_form_state) {
             context.insert(FORM_STATE_CONTEXT_KEY.to_string(), form.context_value());
         }
 

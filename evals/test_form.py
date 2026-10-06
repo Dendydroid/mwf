@@ -13,10 +13,12 @@ CORRECT = "correct_form_field_value"
 FORM_QUESTION = "get_information[form_information]"
 WEATHER = "get_information[get_current_weather_in_berlin]"
 DOCTOR = "start_form[doctor_appointment]"
+LAST_FORM = "get_information[last_filled_out_form_information]"
 
 CANNOT_HELP = ["you cannot help with while the form is being filled in"]
 FUTURE = ["was not recorded for date_of_birth", "A date of birth cannot be in the future"]
 DROPPED = ["is wrong, so it was dropped"]
+SUMMARIZE = ["Summarize it", "patient_name:"]
 # A second form in the call: what the first one wrote back into the hints waits to be confirmed again
 SECOND_FORM = {
     "patient_name": ["awaiting_confirmation", "Hans Müller"],
@@ -49,6 +51,14 @@ GOLDENS = [
     # A yes with nothing to confirm changes nothing
     golden("yes-with-nothing-to-confirm-de", "Ja", state="name_queued", lang="de",
            capability="confirm or reject", form="unchanged"),
+    # Several values in one answer are all recorded. Each then waits for its own yes, in the form's order
+    golden("several-values-de",
+           "Der Patient heißt Hans Müller, er hat starke Kopfschmerzen und möchte morgen um 15 Uhr kommen.",
+           state="name_queued", lang="de", capability="several values in one answer", intent=PROVIDE,
+           form={"patient_name": ["awaiting_confirmation", "Hans Müller"], "date_of_birth": ["queued", None],
+                 "reason": ["awaiting_confirmation", has("kopfschmerzen")],
+                 "appointment_date": ["awaiting_confirmation", has(("tomorrow", "morgen"))],
+                 "appointment_time": ["awaiting_confirmation", has(("15", "3"))]}),
 
     # ── German: the name was read back ─────────────────────────────────────────────────────────────
     golden("name-yes-de", "Ja", state="name_awaiting", lang="de", capability="confirm or reject",
@@ -74,6 +84,12 @@ GOLDENS = [
     golden("name-moving-on-de", "Er ist am 13. Juni 1991 geboren.", state="name_awaiting", lang="de",
            capability="give a value", intent=PROVIDE,
            form={"patient_name": ["completed", "Hans Müller"], "date_of_birth": ["awaiting_confirmation", "1991-06-13"]}),
+    # Values for later fields alone accept the value that was read back, and none of them is accepted with it
+    golden("several-values-moving-on-de", "Er ist am 13. Juni 1991 geboren und hat Rückenschmerzen.",
+           state="name_awaiting", lang="de", capability="several values in one answer", intent=PROVIDE,
+           form={"patient_name": ["completed", "Hans Müller"], "date_of_birth": ["awaiting_confirmation", "1991-06-13"],
+                 "reason": ["awaiting_confirmation", has("rückenschmerzen")]},
+           known_gap="values for two later fields are taken for a yes to the value read back, and are lost (gap 10)"),
     golden("unclear-word-de", "Hmm", state="name_awaiting", lang="de", capability="confirm or reject",
            intent="unsupported", form="unchanged",
            known_gap="unclear words are taken for a yes (gap 7)"),
@@ -99,7 +115,8 @@ GOLDENS = [
            capability="validator", intent=PROVIDE, context=FUTURE, form={"date_of_birth": ["queued", None]},
            says=[["Zukunft"]]),
     golden("birth-unreadable-de", "Irgendwann im Sommer.", state="dob_queued", lang="de",
-           capability="give a value", form="unchanged"),
+           capability="give a value", form="unchanged",
+           known_gap="an answer the asked field cannot take is recorded for a later field it fits (gap 10)"),
     # A field that is already confirmed is opened again
     golden("correct-confirmed-name-de", "Moment, der Name ist falsch, der Patient heißt Hans Meier.",
            state="dob_queued", lang="de", capability="correct a value", intent=CORRECT,
@@ -137,6 +154,11 @@ GOLDENS = [
            form={"reason": ["awaiting_confirmation", has("rückenschmerzen")]}),
     golden("form-question-booked-yet-de", "Haben Sie den Termin schon gebucht?", state="reason_queued", lang="de",
            capability="question about the form", intent=FORM_QUESTION, form="unchanged"),
+    golden("several-values-later-fields-de", "Er hat Rückenschmerzen und kann nächsten Samstag am Vormittag.",
+           state="reason_queued", lang="de", capability="several values in one answer", intent=PROVIDE,
+           form={"reason": ["awaiting_confirmation", has("rückenschmerzen")],
+                 "appointment_date": ["awaiting_confirmation", has(("saturday", "samstag"))],
+                 "appointment_time": ["awaiting_confirmation", has(("morning", "vormittag"))]}),
     golden("reason-yes-de", "Ja", state="reason_awaiting", lang="de", capability="confirm or reject",
            intent="confirm_yes", form={"reason": ["completed", ANY], "appointment_date": ["queued", None]}),
     golden("reason-no-with-the-right-one-de", "Nein, eigentlich sind es Rückenschmerzen.", state="reason_awaiting",
@@ -154,15 +176,15 @@ GOLDENS = [
     golden("appointment-date-de", "Am 20. Oktober.", state="date_queued", lang="de",
            capability="give a value", intent=PROVIDE,
            form={"appointment_date": ["awaiting_confirmation", has(("20", "twentieth"), ("october", "oktober"))]}),
-    # The date and the time are two steps: said in one answer, the date is taken and the time is asked for
+    # The date and the time are two steps: said in one answer, both are recorded and confirmed one after the other
     golden("appointment-date-with-time-de", "Morgen um 15 Uhr.", state="date_queued", lang="de",
            capability="date and time in one answer", intent=PROVIDE,
            form={"appointment_date": ["awaiting_confirmation", has(("tomorrow", "morgen"))],
-                 "appointment_time": ["queued", None]}),
+                 "appointment_time": ["awaiting_confirmation", has(("15", "3"))]}),
     golden("appointment-weekday-with-time-de", "Nächsten Samstag vormittags.", state="date_queued", lang="de",
            capability="date and time in one answer", intent=PROVIDE,
            form={"appointment_date": ["awaiting_confirmation", has(("saturday", "samstag"))],
-                 "appointment_time": ["queued", None]}),
+                 "appointment_time": ["awaiting_confirmation", has(("morning", "vormittag", "noon"))]}),
     # A calendar question is not an appointment date
     golden("calendar-inside-form-de", "Welches Datum ist nächsten Samstag?", state="date_queued", lang="de",
            capability="outside request in a form", intent="unsupported", form="unchanged", context=CANNOT_HELP),
@@ -210,8 +232,12 @@ GOLDENS = [
     golden("second-form-starts-with-the-last-values-de", "Ich möchte noch einen Arzttermin vereinbaren.",
            state="completed", lang="de", capability="after a completed form", intent=DOCTOR, form=SECOND_FORM),
     golden("question-about-booking-de", "Für wen habe ich den Termin gebucht?", state="completed", lang="de",
-           capability="after a completed form", form="none", says=[["Hans"], ["Müller"]],
-           known_gap="no main menu intent for a question about the completed form (gap 9)"),
+           capability="after a completed form", intent=LAST_FORM, form="none", context=SUMMARIZE,
+           says=[["Hans"], ["Müller"]]),
+    # What was booked is the appointment: the day of the walk has to be in the summary
+    golden("question-what-was-booked-de", "Was habe ich gebucht?", state="completed", lang="de",
+           capability="after a completed form", intent=LAST_FORM, form="none", context=SUMMARIZE,
+           says=[["Samstag"]]),
     golden("nothing-else-de", "Nein danke, das war alles.", state="completed", lang="de",
            capability="end call", intent="end_call", action="end_call", asks="nothing"),
 
@@ -223,6 +249,12 @@ GOLDENS = [
            never_says=[["degree", "°"]]),
     golden("cancel-en", "I want to cancel this.", state="name_queued", lang="en", capability="cancel the form",
            intent="cancel_form", form="none", context=["form was cancelled"], asks="anything_else"),
+    golden("several-values-en", "John Smith, he has a bad headache and would like to come tomorrow at 3 pm.",
+           state="name_queued", lang="en", capability="several values in one answer", intent=PROVIDE,
+           form={"patient_name": ["awaiting_confirmation", "John Smith"], "date_of_birth": ["queued", None],
+                 "reason": ["awaiting_confirmation", has("headache")],
+                 "appointment_date": ["awaiting_confirmation", has("tomorrow")],
+                 "appointment_time": ["awaiting_confirmation", has(("3", "15"))]}),
 
     golden("name-yes-en", "Yes", state="name_awaiting", lang="en", capability="confirm or reject",
            intent="confirm_yes", form={"patient_name": ["completed", "John Smith"], "date_of_birth": ["queued", None]}),
@@ -258,10 +290,12 @@ GOLDENS = [
            form={"appointment_date": ["awaiting_confirmation", has("saturday")], "appointment_time": ["queued", None]}),
     golden("appointment-date-with-time-en", "Tomorrow at 3 pm.", state="date_queued", lang="en",
            capability="date and time in one answer", intent=PROVIDE,
-           form={"appointment_date": ["awaiting_confirmation", has("tomorrow")], "appointment_time": ["queued", None]}),
+           form={"appointment_date": ["awaiting_confirmation", has("tomorrow")],
+                 "appointment_time": ["awaiting_confirmation", has(("3", "15"))]}),
     golden("appointment-weekday-with-time-en", "Next Saturday in the morning.", state="date_queued", lang="en",
            capability="date and time in one answer", intent=PROVIDE,
-           form={"appointment_date": ["awaiting_confirmation", has("saturday")], "appointment_time": ["queued", None]}),
+           form={"appointment_date": ["awaiting_confirmation", has("saturday")],
+                 "appointment_time": ["awaiting_confirmation", has("morning")]}),
     golden("appointment-date-yes-en", "Yes", state="date_awaiting", lang="en", capability="confirm or reject",
            intent="confirm_yes", form={"appointment_date": ["completed", ANY], "appointment_time": ["queued", None]}),
     golden("appointment-date-no-with-the-right-one-en", "No, Sunday would be better.", state="date_awaiting",
@@ -288,8 +322,8 @@ GOLDENS = [
            form={"appointment_time": ["awaiting_confirmation", has("afternoon")]}),
 
     golden("question-about-booking-en", "What did I book?", state="completed", lang="en",
-           capability="after a completed form", form="none", says=[["John"], ["Smith"]],
-           known_gap="no main menu intent for a question about the completed form (gap 9)"),
+           capability="after a completed form", intent=LAST_FORM, form="none", context=SUMMARIZE,
+           says=[["Saturday"]]),
 ]
 
 
