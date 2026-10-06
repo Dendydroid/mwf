@@ -110,7 +110,11 @@ MACHINES = {
     "ExtractedFormValues": "context_extractor",
     "ExtractedMainMenuIntent": "intent_matcher",
     "ExtractedFormIntent": "intent_matcher",
+    # Asked after the form's matcher when it chose `confirm_yes`: is the utterance a question?
+    "CheckedAgreement": "agreement_checker",
     "FormulatedResponse": "response_formulator",
+    # The form formulator's answer to a question about the form
+    "FormulatedAnswer": "response_formulator",
 }
 
 
@@ -243,9 +247,9 @@ def stages_of(records):
             stages[f"{prompt.machine}_prompt_chars"] = prompt.chars
             stages[f"{prompt.machine}_answer_chars"] = answer.chars
 
-    # Between the matcher's answer and the formulator's prompt the intent handler runs:
+    # Between the last answer about the intent and the formulator's prompt the intent handler runs:
     # the state change, the validators and whatever it fetches
-    matched = answers.get("intent_matcher")
+    matched = answers.get("agreement_checker") or answers.get("intent_matcher")
     formulating = next((prompt for prompt in prompts if prompt.machine == "response_formulator"), None)
     if matched and formulating:
         stages["intent_handler_ms"] = milliseconds(matched.at, formulating.at)

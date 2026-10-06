@@ -1,0 +1,471 @@
+# Every text the assistant says to a caller or shows a machine. The code has no text of its own: it
+# finds one here by its key, which is the name of an enum's variant or of a form's field.
+#
+#   - A text with de / en / ru / uk under it is said to the caller as it is, in the caller's language.
+#     Every such text needs all four.
+#   - Every other text is English and goes into a machine's prompt.
+#   - {name} inside a text is filled in by the code.
+#
+# The file is read once when the app starts, and the app does not start when a text it can ask for is
+# missing. A change needs a restart (in Docker: ./update-app.sh).
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  Said by code in any form: `Phrase` in app/src/vocabulary.rs
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# The caller said yes to a value that was read back
+[phrases.thanks]
+de = "Danke."
+en = "Thank you."
+ru = "Спасибо."
+uk = "Дякую."
+
+# The caller said no to it
+[phrases.sorry]
+de = "Entschuldigung."
+en = "Sorry about that."
+ru = "Прошу прощения."
+uk = "Перепрошую."
+
+# The third no to the value of one field
+[phrases.offer_human]
+de = "Entschuldigung, das war wieder falsch. Wenn Sie möchten, verbinde ich Sie mit einer Kollegin oder einem Kollegen."
+en = "I'm sorry, I got that wrong again. If you prefer, just ask me for a human colleague."
+ru = "Прошу прощения, снова неверно. Если хотите, я соединю вас с сотрудником."
+uk = "Перепрошую, знову неправильно. Якщо бажаєте, я з'єднаю вас зі співробітником."
+
+# A value that could not be read, or an answer that gave none
+[phrases.not_understood]
+de = "Das habe ich leider nicht verstanden."
+en = "Sorry, I didn't catch that."
+ru = "К сожалению, не удалось разобрать ответ."
+uk = "На жаль, не вдалося розібрати відповідь."
+
+# A request the form cannot take, such as the weather
+[phrases.cannot_help_in_form]
+de = "Dabei kann ich im Moment leider nicht helfen."
+en = "Sorry, I can't help with that right now."
+ru = "К сожалению, сейчас я не могу с этим помочь."
+uk = "На жаль, зараз я не можу з цим допомогти."
+
+# The caller ends the call while a form is open
+[phrases.goodbye]
+de = "Vielen Dank für Ihren Anruf. Auf Wiederhören."
+en = "Thank you for calling. Goodbye."
+ru = "Спасибо за звонок. До свидания."
+uk = "Дякую за дзвінок. До побачення."
+
+# The caller asks for a human while a form is open
+[phrases.transfer]
+de = "Ich verbinde Sie jetzt mit einer Kollegin oder einem Kollegen."
+en = "I am transferring you to a human colleague now."
+ru = "Сейчас я соединю вас с сотрудником."
+uk = "Зараз я з'єднаю вас зі співробітником."
+
+# A machine failed, so the turn was taken back: in the main menu, and inside a form
+[phrases.turn_failed_in_main_menu]
+de = "Entschuldigung, bei uns ist ein Fehler aufgetreten, bitte versuchen Sie es noch einmal. Ich kann Ihnen das aktuelle Wetter in Berlin oder den Wechselkurs von Hrywnja zu Euro nennen oder einen Arzttermin für Sie buchen."
+en = "Sorry, an error happened on our side, please try again. I can tell you the current weather in Berlin, the hryvnia to euro exchange rate, or book a doctor's appointment."
+ru = "Извините, на нашей стороне произошла ошибка, пожалуйста, попробуйте ещё раз. Я могу подсказать текущую погоду в Берлине, курс гривны к евро или записать вас на приём к врачу."
+uk = "Вибачте, на нашому боці сталася помилка, будь ласка, спробуйте ще раз. Я можу підказати поточну погоду в Берліні, курс гривні до євро або записати вас на прийом до лікаря."
+
+[phrases.turn_failed_in_form]
+de = "Entschuldigung, bei uns ist ein Fehler aufgetreten, bitte wiederholen Sie das noch einmal."
+en = "Sorry, an error happened on our side, please say that again."
+ru = "Извините, на нашей стороне произошла ошибка, пожалуйста, повторите ещё раз."
+uk = "Вибачте, на нашому боці сталася помилка, будь ласка, повторіть ще раз."
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  Why a validator refused a value: `ValidationError` in app/src/domain/form.rs
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[validation.date_of_birth_in_the_future]
+de = "Ein Geburtsdatum kann nicht in der Zukunft liegen."
+en = "A date of birth cannot be in the future."
+ru = "Дата рождения не может быть в будущем."
+uk = "Дата народження не може бути в майбутньому."
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  How a date is said: {day}, {month} and {year}, and the months from January to December in the
+#  form that wording needs
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[dates.format]
+de = "{day}. {month} {year}"
+en = "{month} {day}, {year}"
+ru = "{day} {month} {year} года"
+uk = "{day} {month} {year} року"
+
+[dates.months]
+de = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"]
+en = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+uk = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  Forms: `FormSupported` in app/src/domain/call.rs, and the fields each has in `build()` in
+#  app/src/domain/form.rs
+#
+#  Per form:   started     said when the form is started, before the question of its first step
+#              completed   said when the caller has confirmed the last field
+#              cancelled   said when the caller stops filling it in
+#  Per field:  description what the machines read about the field in <form_state>
+#              ask         the question that asks the caller for it
+#              confirm     the question that reads its value back, with {value}
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[forms.doctor_appointment.started]
+de = "Gern, vereinbaren wir einen Arzttermin."
+en = "Sure, let's arrange a doctor's appointment."
+ru = "Хорошо, давайте оформим запись к врачу."
+uk = "Добре, давайте оформимо запис до лікаря."
+
+[forms.doctor_appointment.completed]
+de = "Vielen Dank, damit habe ich alles. Ich habe Ihre Terminanfrage weitergegeben. Kann ich sonst noch etwas für Sie tun?"
+en = "Thank you, that is everything. I have passed on your appointment request. Is there anything else I can do for you?"
+ru = "Спасибо, это всё, что нужно. Ваша заявка на приём передана. Могу ли я ещё чем-нибудь помочь?"
+uk = "Дякую, це все, що потрібно. Вашу заявку на прийом передано. Чи можу я ще чимось допомогти?"
+
+[forms.doctor_appointment.cancelled]
+de = "In Ordnung, ich habe die Terminanfrage abgebrochen, es wurde nichts gespeichert. Kann ich sonst noch etwas für Sie tun?"
+en = "All right, I have cancelled the appointment request and kept nothing of it. Is there anything else I can do for you?"
+ru = "Хорошо, запись отменена, ничего не сохранено. Могу ли я ещё чем-нибудь помочь?"
+uk = "Добре, запис скасовано, нічого не збережено. Чи можу я ще чимось допомогти?"
+
+
+[forms.doctor_appointment.fields.patient_name]
+description = "Full name of the patient"
+
+[forms.doctor_appointment.fields.patient_name.ask]
+de = "Wie lautet der vollständige Name des Patienten?"
+en = "What is the full name of the patient?"
+ru = "Как полностью зовут пациента?"
+uk = "Як повністю звати пацієнта?"
+
+[forms.doctor_appointment.fields.patient_name.confirm]
+de = "Ich habe als Namen des Patienten {value} notiert. Ist das richtig?"
+en = "I have the patient's name as {value}. Is that right?"
+ru = "Имя пациента — {value}. Всё верно?"
+uk = "Ім'я пацієнта — {value}. Усе правильно?"
+
+
+[forms.doctor_appointment.fields.date_of_birth]
+description = "Patient's date of birth"
+
+[forms.doctor_appointment.fields.date_of_birth.ask]
+de = "Wie lautet das Geburtsdatum des Patienten?"
+en = "What is the patient's date of birth?"
+ru = "Какая у пациента дата рождения?"
+uk = "Яка дата народження пацієнта?"
+
+[forms.doctor_appointment.fields.date_of_birth.confirm]
+de = "Ich habe als Geburtsdatum den {value} notiert. Ist das richtig?"
+en = "I have the patient's date of birth as {value}. Is that right?"
+ru = "Дата рождения пациента — {value}. Всё верно?"
+uk = "Дата народження пацієнта — {value}. Усе правильно?"
+
+
+[forms.doctor_appointment.fields.reason]
+description = "Reason for the visit"
+
+[forms.doctor_appointment.fields.reason.ask]
+de = "Was ist der Grund für den Besuch?"
+en = "What is the reason for the visit?"
+ru = "Какова причина визита?"
+uk = "Яка причина візиту?"
+
+[forms.doctor_appointment.fields.reason.confirm]
+de = "Ich habe als Grund für den Besuch notiert: {value}. Ist das richtig?"
+en = "I have noted the reason for the visit as: {value}. Is that right?"
+ru = "Причина визита: {value}. Всё верно?"
+uk = "Причина візиту: {value}. Усе правильно?"
+
+
+# Not "Preferred date": German replies then asked for "den bevorzugten Termin für den Termin"
+[forms.doctor_appointment.fields.appointment_date]
+description = "Date of the appointment"
+
+[forms.doctor_appointment.fields.appointment_date.ask]
+de = "An welchem Tag möchten Sie den Termin?"
+en = "On which day would you like the appointment?"
+ru = "На какой день вы хотите записаться?"
+uk = "На який день ви хочете записатися?"
+
+[forms.doctor_appointment.fields.appointment_date.confirm]
+de = "Ich habe als Tag für den Termin notiert: {value}. Ist das richtig?"
+en = "I have noted the day of the appointment as: {value}. Is that right?"
+ru = "День приёма: {value}. Всё верно?"
+uk = "День прийому: {value}. Усе правильно?"
+
+
+[forms.doctor_appointment.fields.appointment_time]
+description = "Preferred time of the appointment"
+
+[forms.doctor_appointment.fields.appointment_time.ask]
+de = "Um welche Uhrzeit möchten Sie den Termin?"
+en = "At what time would you like the appointment?"
+ru = "В какое время вам удобно прийти?"
+uk = "О котрій годині вам зручно прийти?"
+
+[forms.doctor_appointment.fields.appointment_time.confirm]
+de = "Ich habe als Uhrzeit für den Termin notiert: {value}. Ist das richtig?"
+en = "I have noted the time of the appointment as: {value}. Is that right?"
+ru = "Время приёма: {value}. Всё верно?"
+uk = "Час прийому: {value}. Усе правильно?"
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  Intents: `CallerIntent` in app/src/domain/call.rs, each under its label
+#
+#  description  how an intent matcher is told to match it
+#  offer        how it is named when the caller is told what the assistant can help with. An intent
+#               without one is not named there
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[intents.unsupported]
+description = "None of the other values fits. Also a greeting, small talk, or a request that is similar to a supported one but not the same, such as another city, another currency or another kind of booking"
+
+[intents."get_information[calendar_help]"]
+description = "A question about the calendar, such as which date next Saturday is"
+
+[intents."get_information[get_current_uah_per_eur]"]
+description = "The caller asks for the current exchange rate of the Ukrainian hryvnia to the euro"
+offer = "the euro to hryvnia exchange rate"
+
+[intents."get_information[get_current_weather_in_berlin]"]
+description = "The caller asks about the current weather in Berlin"
+offer = "the current weather in Berlin"
+
+[intents."get_information[form_information]"]
+description = "A question about the form or the values the caller gave, such as \"what name did you record\" or \"did you book it\""
+
+[intents."get_information[last_filled_out_form_information]"]
+description = "A question about what the caller filled out or booked in this call, such as \"what did I book\" or \"which name did you write down\". The last filled out form is summarized only if there is one (it is not None)"
+
+[intents."start_form[doctor_appointment]"]
+description = "The caller either explicitly states that he wants to book a doctor's appointment or describes the symptoms which also most probably means he wants a doctor's appointment"
+offer = "booking a doctor's appointment"
+
+[intents.provide_form_field_value]
+description = "An answer to the `current_field` of <form_state> when it is `queued`, including a plain yes or no when its kind is `bool`"
+
+[intents.correct_form_field_value]
+description = "A new value for a field that is already `completed`, or a denial that also gives the right value when the `current_field` of <form_state> is `awaiting_confirmation`"
+
+[intents.refer_to_context_for_form_field_value]
+description = "A value the caller points to instead of saying it, such as \"the same as before\""
+
+[intents.confirm_yes]
+description = "Agreement when the `current_field` of <form_state> is `awaiting_confirmation`"
+
+[intents.confirm_no]
+description = "A denial that gives no other value, such as \"no\" or \"that is wrong\", when the `current_field` of <form_state> is `awaiting_confirmation`"
+
+[intents.cancel_form]
+description = "The caller wants to stop filling in the form in progress"
+
+[intents.repeat]
+description = "The caller did not hear or understand the last answer"
+
+[intents.end_call]
+description = "The caller says goodbye or answers that they need nothing else"
+
+[intents.transfer_to_human]
+description = "The caller asks for a person, an operator or an agent"
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  Machines: the role and the rules of each, see `Machine` in app/src/domain/machine.rs
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[machines.main_menu_context_extractor]
+role = "You are a context extractor machine. You receive a <utterance> on the input and provide the values in a predefined <json_output_format> as output."
+rules = [
+    "Each extracted value must only be set once in one property of <json_output_format>.",
+    "If value cannot be derived from <utterance>, set the key to null.",
+    "Write `date_of_birth_iso_8601` as YYYY-MM-DD.",
+    "Write `appointment_spoken_date` and `appointment_spoken_time` in the caller's own words, without working a date or time out.",
+]
+
+[machines.main_menu_intent_matcher]
+role = "You are the intent matcher. Classify what the caller wants with their latest <utterance>."
+rules = [
+    "Classify only the latest <utterance>. Use <conversation_history> to understand short or elliptical answers such as \"yes\", \"the second one\" or a bare name",
+]
+
+[machines.main_menu_response_formulator]
+role = "You are the voice of a phone assistant. Reply to the caller's <utterance> from what <context> gives you, as natural speech."
+rules = [
+    "Reply in the language given by <language> in <context>",
+    "Only ask one question in reply",
+    "When introducing an abbreviation or acronym, expand it to its full form on first mention (e.g., 'API (Application Programming Interface)'). For common everyday terms like ID, HTML, or USB, keep them as abbreviations.",
+    "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
+    "Follow <response_context> instructions when answering and take its content into consideration",
+]
+
+# {language}, {day} and {time} of the third rule come from the examples below, by the caller's language
+[machines.form_context_extractor]
+role = "You are a context extractor machine. The caller is filling in the form in <form_state>. You receive a <utterance> on the input and provide the form values it gives in a predefined <json_output_format> as output."
+rules = [
+    "Each key of <json_output_format> is a field of <form_state>. Set it to the value <utterance> gives for that field, or to null when <utterance> gives none. One utterance can give values for several fields",
+    "A value the caller gives without saying what it is for is for the `current_field` of <form_state>, also when it comes with a denial or changes the value that field has",
+    "For a field of kind `date` write YYYY-MM-DD. For a field of kind `spoken_date` write the caller's words for the day in {language} and lowercase, such as {day}, without working the date out. For a field of kind `spoken_time` write the caller's words for the time of day the same way, such as {time}. Write numbers as digits, yes and no as true and false, and text as the caller said it",
+    "Extract the values only from what <utterance> itself says. Never copy a value that is already in <form_state> or in <conversation_history>.",
+    "One exception is a value the caller points to instead of saying it, such as \"the same as before\": write the value they point to.",
+    "The other is a value the caller changes only a part of: write the whole value with that part changed and the rest as it is in <form_state>. When <form_state> has 2001-04-09 and the caller says \"no, the tenth\" or \"yes, but in 2002\", write 2001-04-10 or 2002-04-09. When it has Maria Rossi and the caller says \"no, the last name is Russo\", write Maria Russo.",
+    "Each value must only be set once, in one key of <json_output_format>.",
+    "If <utterance> gives no form value, such as a plain agreement or denial, a question or a request, set every key to null.",
+]
+
+# The language the days and times a caller says are kept in. The model follows the examples into
+# their language, and translated a day wrongly without anyone noticing ("übermorgen" came out as
+# "next monday"). Only German has examples of its own so far: the others get the English ones
+[machines.form_context_extractor.examples.de]
+language = "German"
+day = "\"nächsten samstag\" or \"morgen\""
+time = "\"am vormittag\" or \"15 uhr\""
+
+[machines.form_context_extractor.examples.en]
+language = "English"
+day = "\"next saturday\" or \"tomorrow\""
+time = "\"in the morning\" or \"3 pm\""
+
+[machines.form_context_extractor.examples.ru]
+language = "English"
+day = "\"next saturday\" or \"tomorrow\""
+time = "\"in the morning\" or \"3 pm\""
+
+[machines.form_context_extractor.examples.uk]
+language = "English"
+day = "\"next saturday\" or \"tomorrow\""
+time = "\"in the morning\" or \"3 pm\""
+
+[machines.form_intent_matcher]
+role = "You are the intent matcher. The caller is filling in the form in <form_state>. Classify what the caller wants with their latest <utterance>."
+rules = [
+    "Classify only the latest <utterance>. Use <conversation_history> to understand short or elliptical answers such as \"yes\", \"the second one\" or a bare name",
+    "Look at the state of the `current_field` of <form_state> first: when it is `queued` the caller was asked for its value, when it is `awaiting_confirmation` the caller was asked whether its value is right",
+    "Use `confirm_yes` only for a clear agreement. A word that neither agrees, denies nor gives a value is `unsupported`",
+    "A request that is not about this form, such as the weather, an exchange rate, a question about the calendar or another booking, is `unsupported`",
+]
+
+# Only asked about an utterance the form's intent matcher took for `confirm_yes`, and shown that utterance
+# alone. With the form in front of it the matcher takes a question for an agreement when it asks whether
+# something is right or confirmed ("Ist der Termin damit schon bestätigt?"), and a rule against that moves
+# its other answers. So did this check, shown the form: it missed 9 of 535 such questions, and none without it
+[machines.form_agreement_checker]
+role = "You check what a caller said to a phone assistant that is filling in a form with them. Say whether the caller asks a question with their <utterance>."
+rules = [
+    "A question is a question whatever it is about, also when it asks whether something is right, booked or confirmed, or asks you to confirm something",
+]
+
+# Only asked when the caller has a question about the form. Code says the step's question after its answer.
+# {language} is the caller's, by its English name: told to reply "in the language given by <language>", it
+# answered a German "Haben Sie den Termin schon gebucht?" in English.
+# "confirmed" in the last rule: asked whether the appointment is confirmed, 17 of 282 answers said that it
+# is ("Der Termin ist jetzt bestätigt."), and 5 with the word in the rule
+[machines.form_response_formulator]
+role = "You are the voice of a phone assistant that is filling in a form with the caller. Reply to the caller's <utterance> from what <context> gives you, as natural speech."
+rules = [
+    "Reply in {language}, which is the language the caller speaks",
+    "Ask nothing: the next question of the form is asked right after your answer",
+    "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
+    "Follow <response_context> instructions when answering and take its content into consideration",
+    "When introducing an abbreviation or acronym, expand it to its full form on first mention (e.g., 'API (Application Programming Interface)'). For common everyday terms like ID, HTML, or USB, keep them as abbreviations.",
+    "Say forms, fields and values in plain words, never as their snake_case names or states",
+    "Answer a question about the form only from the fields of <form_state>: a field without a value has not been given yet, and a field that is not `completed` has not been confirmed yet",
+    "The form is only sent once every field is confirmed, so never say it is booked, confirmed or done",
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  What a machine is told about a key of its answer, and the rule each key gets
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[output_values]
+machine_reasoning = "A brief 1-sentence analysis of the conversation state based on rules and context."
+caller_intent = "Caller's intended action, or `unsupported` when none of the other values fits"
+# What the form's agreement checker says of an utterance
+is_question = "true when the caller asks something with <utterance>, false when the caller answers, agrees or denies"
+# Every key of the main menu's hints
+hint = "what <utterance> says for it, or null when <utterance> does not say it"
+spoken_response = "A natural, concise spoken reply of 1 to 2 sentences in plain text for text-to-speech, with numbers, currencies and dates written the way they are spoken"
+# The answer to a question about the form
+spoken_answer = "A natural, concise answer of one sentence in plain text for text-to-speech, with numbers, currencies and dates written the way they are spoken, that asks nothing"
+
+[prompt]
+set_value = "Set `{key}` to: {description}"
+# Added to it for a key that only takes the values listed in the prompt
+only_allowed_values = ". Use only a value listed in <allowed_values><{key}>"
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  What a response formulator is told to say, as <response_context>
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[instructions]
+service_unavailable = "Politely apologize, state that the requested service is unavailable at the moment."
+repeat = "The caller asked to hear your last reply from <conversation_history>."
+end_call = "The caller is ending the call. Say a short, friendly goodbye and ask nothing."
+transfer = "Tell the caller you are transferring them to a human agent now, and ask nothing."
+# {offers} are the `offer` texts of the main menu's intents
+unsupported = "The caller asked for something that is not supported. Politely say so and list, in plain words, what you can help with instead: {offers}."
+calendar_help = "The caller asked about dates or the calendar, which you cannot help with. Say you are sorry that you cannot help with dates"
+last_filled_out_form = "The caller asked about the form they filled out last in this call. Summarize it in one or two sentences: the {form} form with {values}."
+no_filled_out_form = "The caller asked about a form they filled out in this call, but none was filled out yet. Say so and summarize nothing."
+form_question = "The caller asked about the form. Answer it in one sentence and ask nothing."
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  Facts a response formulator answers from, in words: it makes things up from a code or a number
+#  of degrees
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+[facts]
+weather = "Current weather in Berlin: {sky}, {temperature} degrees Celsius, wind of {windspeed} kilometres per hour from the {direction}."
+exchange_rate = "1 EUR = {rate} UAH, the official National Bank of Ukraine rate for {date}"
+# The {date} of a rate that came without one
+today = "today"
+# Where the wind comes from, clockwise from north in steps of 22.5 degrees
+compass = [
+    "north", "north-northeast", "northeast", "east-northeast",
+    "east", "east-southeast", "southeast", "south-southeast",
+    "south", "south-southwest", "southwest", "west-southwest",
+    "west", "west-northwest", "northwest", "north-northwest",
+]
+
+# The {sky} by the WMO weather code, and `other` for a code that is not listed
+[facts.sky]
+0 = "clear sky"
+1 = "mainly clear"
+2 = "partly cloudy"
+3 = "overcast"
+45 = "fog"
+48 = "freezing fog"
+51 = "light drizzle"
+53 = "drizzle"
+55 = "heavy drizzle"
+56 = "light freezing drizzle"
+57 = "freezing drizzle"
+61 = "light rain"
+63 = "rain"
+65 = "heavy rain"
+66 = "light freezing rain"
+67 = "freezing rain"
+71 = "light snow"
+73 = "snow"
+75 = "heavy snow"
+77 = "snow grains"
+80 = "light rain showers"
+81 = "rain showers"
+82 = "heavy rain showers"
+85 = "light snow showers"
+86 = "snow showers"
+95 = "a thunderstorm"
+96 = "a thunderstorm with light hail"
+99 = "a thunderstorm with hail"
+other = "sky that could not be told"

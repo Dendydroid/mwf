@@ -43,8 +43,8 @@ prompt with `-r 3` or more and read the pass rates.
 |---|---|---|
 | `test_main_menu.py` | 24 de, 15 en | Weather, exchange rate, starting the form (also from symptoms alone), the calendar refusal, repeat, end call, transfer, requests that are close to a supported one but not the same, and a question about a booking when no form was filled out yet |
 | `test_hints.py` | 8 de, 6 en | What the caller says before the form: taken as hints, kept over turns, put into the started form to be confirmed, left out when a validator refuses it |
-| `test_form.py` | 64 de, 26 en | One answer at one point of the doctor form: a value, yes, no, "no, it is …", "yes, but …", a value for the next field, several values in one answer (also the date and the time of the appointment), a question about the form, an outside request, repeat, cancel, transfer, end call, the date-of-birth validator, completing the form, and the main menu after a completed form, where the hints hold its values, a second form starts with them and a question about the booking gets its summary |
-| `test_conversations.py` | 9 de, 3 en | Whole calls: booking with full sentences, with short answers, with hints, with corrections, three rejections and the offer of a human, interruptions, a value the caller points to, a change of language |
+| `test_form.py` | 69 de, 30 en | One answer at one point of the doctor form: a value, yes, no, "no, it is …", "yes, but …", a value for the next field, several values in one answer (also the date and the time of the appointment), a question about the form, a question that must not count as a yes ("Ist der Termin damit schon bestätigt?", also without its question mark and about the last value), an outside request, repeat, cancel, transfer, end call, the date-of-birth validator, completing the form, and the main menu after a completed form, where the hints hold its values, a second form starts with them and a question about the booking gets its summary |
+| `test_conversations.py` | 10 de, 3 en | Whole calls: booking with full sentences, with short answers, with hints, with corrections, three rejections and the offer of a human, interruptions, questions asked where a yes was due, a value the caller points to, a change of language |
 | `test_api.py` | 10 | Bad requests, the keys of the response, the session and its sliding expiry, one turn of a call at a time, a turn that fails on the app's side, what becomes of a completed form |
 
 The form suite does not play a call up to the point it tests. `FormStates` in `suite.py` takes one call per
@@ -53,6 +53,12 @@ Each golden starts from a copy of the state it names, so every answer is tried a
 
 A golden that shows a gap `context.md` already lists carries `known_gap`. It is run and reported, but it is
 marked `flaky` for DeepEval, so it does not fail the run.
+
+In a form the reply is worded by code, from the app's vocabulary (`app/config/llm_vocabulary.toml`). The suites
+read the same file, so a golden names such a sentence by its key and `says` takes it word for word:
+`phrase("thanks", "de")`, `refusal("date_of_birth_in_the_future", "en")`, `form_says("completed", "de")`,
+`ask("patient_name", "de")`, `confirm("patient_name", "Hans Müller", "de")` (`suite.py`). A sentence that is
+reworded in the vocabulary needs no change here.
 
 ## The checks
 
@@ -67,17 +73,22 @@ turn with it. None of them asks a model, so the same answer always gets the same
 | Form State | context extractor of the form, flow code | the named fields have the expected state and value |
 | Completed Form | the same | the form the turn completed has the expected values |
 | Call Action | flow code | `action` is the expected one |
-| Response Context | flow code | the formulator was told what it should be told |
-| Reply Language | response formulator | lingua finds the reply in the caller's language |
-| Reply Speakable | response formulator | no markup, snake_case name, ISO date, emoji or letter of another script |
-| Reply Says | response formulator | the reply mentions what the golden lists and nothing it forbids |
-| Reply Asks | response formulator | at most one question, and it is the form's next step: the field it is on, or the confirmation of the value read back |
-| No Early Booking | response formulator | the reply does not say the appointment is booked while the form is open |
+| Response Context | flow code | the formulator was told what it should be told, on a turn a formulator words: the main menu, and a question about the form |
+| Reply Language | reply | lingua finds the reply in the caller's language |
+| Reply Speakable | reply | no markup, snake_case name, ISO date, emoji or letter of another script |
+| Reply Says | reply | the reply mentions what the golden lists and nothing it forbids. For a turn code words, that is the vocabulary's sentence |
+| Reply Asks | reply | at most one question, and it is the form's next step: the field it is on, or the confirmation of the value read back |
+| No Early Booking | reply | the reply does not say the appointment is booked or confirmed while the form is open |
 | Turn Latency | speed | the turn took no longer than the budget |
-| Repeated Sentences | response formulator | no reply of a conversation says a whole sentence of the reply before it again |
+| Repeated Sentences | reply | no reply of a conversation says a whole sentence of the reply before it again. A sentence of the vocabulary does not count: code asks a step's question again after a no, an outside request or a question about the form |
 | Facts | API and session | what the test worked out itself holds, e.g. the status of a bad request |
 
-`Reply Says`, `Reply Asks` and `No Early Booking` go by words, in German and English. A failure of `Reply Asks`
+"Reply" is what the caller hears: code's words in a form, the response formulator's in the main menu and in the
+answer to a question about the form.
+
+`Reply Says`, `Reply Asks` and `No Early Booking` go by words, in German and English. `Reply Asks` knows a step's
+question by the words in `ASKS_FOR` (`metrics.py`), so an `ask` sentence that is reworded in the vocabulary has to
+keep one of them or get its word added there. A failure of `Reply Asks`
 has been a real one every time so far: of the 177 different replies of the first run, read by hand, the 23 it
 failed were all wrong, and 1 of the 154 it passed was wrong too. What it cannot tell is whether a reply is
 well worded, or whether a date read back in words is the right one.
@@ -108,9 +119,11 @@ not been run yet.
 - **Where a failing turn fails first**: a turn with a wrong intent also fails its form state and reply. The first
   failed check, in the order a turn runs, is the part to look at.
 - **Which capability fails**: goldens per suite, capability and language.
-- **Where the time goes**: the context extractor, the intent matcher, the intent handler (state change,
-  validators, the weather or rate request) and the response formulator of the main menu and of the form, with
-  the size of their prompts and answers.
+- **Where the time goes**: the context extractor, the intent matcher, the agreement checker, the intent handler
+  (state change, validators, the weather or rate request) and the response formulator of the main menu and of the
+  form, with the size of their prompts and answers. A step is counted over the turns that ran it: in a form the
+  formulator only runs for a question about the form, and the agreement checker only when the matcher chose
+  `confirm_yes`.
 - **Does the matcher's confidence point at its mistakes**: the confidence of right and wrong intents.
 - **Known gaps**, and every **failed golden** with what the caller said and heard.
 

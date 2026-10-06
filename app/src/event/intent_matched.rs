@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use reqwest::Client;
 use crate::app::AppState;
-use crate::domain::call_session::{CallSession, CallState};
+use crate::domain::call_session::CallSession;
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use crate::event::form_completed::FormCompletedEvent;
 use tracing::log::error;
-use crate::domain::flow::{FormulatedResponse, IntentMatched};
-use crate::domain::flow::form_flow::form_intent_context_handler;
+use crate::domain::flow::{sentences, FormulatedResponse, IntentMatched, Reply};
+use crate::domain::flow::form_flow::{form_intent_context_handler, FormulatedAnswer};
 use crate::domain::flow::main_menu_flow::main_menu_intent_context_handler;
 use crate::domain::machine::Machine;
 use crate::vllm::VllmClient;
@@ -49,30 +49,31 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
         match &event.intent {
             IntentMatched::MainMenu(main_menu_intent) => {
 
-                main_menu_intent_context_handler(
+                let reply = main_menu_intent_context_handler(
                     &main_menu_intent,
                     &mut session,
                     &self.http_client,
                     &event.app_state
                 ).await;
 
-                // A turn that starts a form is the form's first one: its reply asks for the first step.
-                let formulator = match session.data.state {
-                    CallState::Idle => Machine::main_menu_response_formulator(),
-                    CallState::FormInProgress(..) => Machine::form_response_formulator(),
+                let spoken_response = match reply {
+                    // The turn that starts a form: code says that it is started and asks for its first step.
+                    Reply::Said(spoken_response) => Ok(spoken_response),
+                    Reply::Formulated { .. } => Machine::main_menu_response_formulator()
+                        .query::<FormulatedResponse>(
+                            &self.llm,
+                            &event.utterance,
+                            &session,
+                        )
+                        .await
+                        .map(FormulatedResponse::into_spoken_response),
                 };
 
-                match formulator
-                    .query::<FormulatedResponse>(
-                        &self.llm,
-                        &event.utterance,
-                        &session,
-                    )
-                    .await {
-                    Ok(formulated_response) => {
-                        tracing::log::info!("Created FORMULATED_RESPONSE: {:?}", formulated_response);
+                match spoken_response {
+                    Ok(spoken_response) => {
+                        tracing::log::info!("Created SPOKEN_RESPONSE: {:?}", spoken_response);
 
-                        session.save_last_exchange(&event.utterance, &formulated_response.into_spoken_response())
+                        session.save_last_exchange(&event.utterance, &spoken_response)
                     }
                     Err(vllm_error) => {
                         error!("vLLM error formulating main menu response: {:?}", vllm_error);
@@ -83,7 +84,7 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
             },
             IntentMatched::Form(form_intent, form_values) => {
 
-                let completed_form = form_intent_context_handler(
+                let form_turn = form_intent_context_handler(
                     &form_intent,
                     &form_values,
                     &event.utterance,
@@ -92,20 +93,29 @@ impl EventHandler<IntentMatchedEvent> for IntentMatchedHandler {
                     &event.app_state
                 ).await;
 
-                match Machine::form_response_formulator()
-                    .query::<FormulatedResponse>(
-                        &self.llm,
-                        &event.utterance,
-                        &session,
-                    )
-                    .await {
-                    Ok(formulated_response) => {
-                        tracing::log::info!("Created FORMULATED_RESPONSE: {:?}", formulated_response);
+                let spoken_response = match form_turn.reply {
+                    // Every reply of a form is code's: what the turn has to say, then the step's question.
+                    Reply::Said(spoken_response) => Ok(spoken_response),
+                    // All but the answer to a question about the form, which the formulator words. The
+                    // step's question is still code's, said after it.
+                    Reply::Formulated { then } => Machine::form_response_formulator(session.data.language)
+                        .query::<FormulatedAnswer>(
+                            &self.llm,
+                            &event.utterance,
+                            &session,
+                        )
+                        .await
+                        .map(|answer| sentences(&[&answer.into_spoken_answer(), then.as_deref().unwrap_or_default()])),
+                };
 
-                        session.save_last_exchange(&event.utterance, &formulated_response.into_spoken_response());
+                match spoken_response {
+                    Ok(spoken_response) => {
+                        tracing::log::info!("Created SPOKEN_RESPONSE: {:?}", spoken_response);
+
+                        session.save_last_exchange(&event.utterance, &spoken_response);
 
                         // Only now, so a form the caller was not told about is not sent either.
-                        if let Some(form) = completed_form {
+                        if let Some(form) = form_turn.completed {
                             tracing::log::info!("Completed FORM: {}", form.context_value());
 
                             // The form's callback first: everything that saves comes after it.

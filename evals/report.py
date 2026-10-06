@@ -28,6 +28,7 @@ STEPS = [
     ("language_detection", "language detection"),
     ("context_extractor", "context extractor"),
     ("intent_matcher", "intent matcher"),
+    ("agreement_checker", "agreement checker (after a yes in a form)"),
     ("intent_handler", "intent handler (state, validators, fetch)"),
     ("response_formulator", "response formulator"),
 ]

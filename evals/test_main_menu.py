@@ -5,7 +5,7 @@
 import pytest
 
 from assistant import Call
-from suite import check_turn, golden
+from suite import ask, check_turn, form_says, golden
 
 WEATHER = "get_information[get_current_weather_in_berlin]"
 RATE = "get_information[get_current_uah_per_eur]"
@@ -15,7 +15,8 @@ LAST_FORM = "get_information[last_filled_out_form_information]"
 
 DEGREES = [["Grad", "°", "degree"]]
 HRYVNIA = [["hryw", "hriw", "griw", "gryw", "hryv", "griv", "UAH"], ["Euro", "EUR"]]
-STARTED = ["Started the doctor_appointment form.", "Next, ask the caller for: Full name of the patient."]
+# The turn that starts a form is code's: that it is started, and the question of its first step
+STARTED = {lang: [form_says("started", lang), ask("patient_name", lang)] for lang in ("de", "en")}
 # The reply to an unsupported request lists what the assistant does offer
 OFFER_DE = [["Wetter"], ["kurs", "währung", "hryw", "griw", "UAH", "Euro"], ["Termin", "Arzt"]]
 OFFER_EN = [["weather"], ["rate", "currency", "hryv", "UAH", "euro"], ["appointment", "doctor"]]
@@ -39,14 +40,14 @@ GOLDENS = [
            capability="exchange rate", intent=RATE, context=["1 EUR ="], says=HRYVNIA),
 
     golden("start-form-de-1", "Ich möchte einen Arzttermin vereinbaren.", lang="de", capability="start a form",
-           intent=DOCTOR, context=STARTED, form={"patient_name": ["queued", None]}),
+           intent=DOCTOR, says=STARTED["de"], form={"patient_name": ["queued", None]}),
     golden("start-form-de-2", "Ich brauche einen Termin beim Arzt.", lang="de", capability="start a form",
-           intent=DOCTOR, context=STARTED, form={"patient_name": ["queued", None]}),
+           intent=DOCTOR, says=STARTED["de"], form={"patient_name": ["queued", None]}),
     # Symptoms alone mean a doctor's appointment too
     golden("start-form-de-symptoms-1", "Ich habe seit drei Tagen starke Kopfschmerzen.", lang="de",
-           capability="start a form", intent=DOCTOR, context=STARTED, form={"patient_name": ["queued", None]}),
+           capability="start a form", intent=DOCTOR, says=STARTED["de"], form={"patient_name": ["queued", None]}),
     golden("start-form-de-symptoms-2", "Mein Knie tut weh, ich muss zum Arzt.", lang="de",
-           capability="start a form", intent=DOCTOR, context=STARTED, form={"patient_name": ["queued", None]}),
+           capability="start a form", intent=DOCTOR, says=STARTED["de"], form={"patient_name": ["queued", None]}),
 
     golden("calendar-de-1", "Welches Datum ist nächsten Samstag?", lang="de", capability="calendar refusal",
            intent=CALENDAR, context=["cannot help with"]),
@@ -98,9 +99,9 @@ GOLDENS = [
            intent=RATE, context=["1 EUR ="], says=HRYVNIA),
 
     golden("start-form-en-1", "I'd like to book a doctor's appointment.", lang="en", capability="start a form",
-           intent=DOCTOR, context=STARTED, form={"patient_name": ["queued", None]}),
+           intent=DOCTOR, says=STARTED["en"], form={"patient_name": ["queued", None]}),
     golden("start-form-en-symptoms", "I have had a bad headache for three days.", lang="en",
-           capability="start a form", intent=DOCTOR, context=STARTED, form={"patient_name": ["queued", None]}),
+           capability="start a form", intent=DOCTOR, says=STARTED["en"], form={"patient_name": ["queued", None]}),
 
     golden("calendar-en", "What date is next Saturday?", lang="en", capability="calendar refusal",
            intent=CALENDAR, context=["cannot help with"]),

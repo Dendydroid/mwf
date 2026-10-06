@@ -15,11 +15,22 @@ use serde_json::{json, Map, Value};
 use tracing::info;
 use crate::domain::call_session::{CallSession, CallTurn};
 use crate::vllm::{Answer, VllmClient, VllmError};
+use crate::vocabulary::{fill_in, vocabulary, MachineVocabulary};
 
 pub struct Machine {
     pub(crate) role: String,
 
     pub(crate) rules: Vec<String>,
+}
+
+/// A machine with its role and rules as the vocabulary has them.
+impl From<&MachineVocabulary> for Machine {
+    fn from(texts: &MachineVocabulary) -> Self {
+        Self {
+            role: texts.role.clone(),
+            rules: texts.rules.clone(),
+        }
+    }
 }
 
 impl Machine {
@@ -37,11 +48,39 @@ impl Machine {
         let mut context: Vec<_> = call_session.context().into_iter().collect();
         context.sort();
 
+        self.ask(llm, input, call_session, &context, call_session.get_conversation()).await
+    }
+
+    /// For a machine that judges the utterance by itself: its prompt has neither the call's
+    /// history nor its `<context>`.
+    pub async fn query_utterance_alone<T>(
+        &self,
+        llm: &VllmClient,
+        input: &str,
+        call_session: &CallSession,
+    ) -> Result<T, VllmError>
+    where
+        T: OutputFormat + Default + JsonSchema + DeserializeOwned,
+    {
+        self.ask(llm, input, call_session, &[], &[]).await
+    }
+
+    async fn ask<T>(
+        &self,
+        llm: &VllmClient,
+        input: &str,
+        call_session: &CallSession,
+        context: &[(String, String)],
+        conversation: &[CallTurn],
+    ) -> Result<T, VllmError>
+    where
+        T: OutputFormat + Default + JsonSchema + DeserializeOwned,
+    {
         let mut schema = json_schema::<T>();
         T::fit_schema(&mut schema, call_session);
 
         let system = self
-            .render_system_prompt::<T>(&schema, &context, call_session.get_conversation())
+            .render_system_prompt::<T>(&schema, context, conversation)
             .expect("Could not render the system prompt");
         let user = render_xml(|w| {
             w.create_element("utterance").write_text_content(escaped(input))?;
@@ -80,15 +119,19 @@ impl Machine {
     {
         let output = T::default();
         let fields: Vec<_> = output.iter_schemas().collect();
+        let prompt = &vocabulary().prompt;
 
         render_xml(|w| {
             w.create_element("role").write_text_content(verbatim(&self.role))?;
 
             w.create_element("rules").write_inner_content(|w| {
                 for (name, schema) in &fields {
-                    let mut rule = format!("Set `{name}` to: {}", schema.valid_value_description());
+                    let mut rule = fill_in(
+                        &prompt.set_value,
+                        &[("key", name), ("description", schema.valid_value_description())],
+                    );
                     if schema.uses_strict_allowed_values() {
-                        rule.push_str(&format!(". Use only a value listed in <allowed_values><{name}>"));
+                        rule.push_str(&fill_in(&prompt.only_allowed_values, &[("key", name)]));
                     }
                     w.create_element("rule").write_text_content(verbatim(&rule))?;
                 }
@@ -327,4 +370,37 @@ pub trait OutputFormat {
 
     /// Called once the answer is parsed, for what else it tells, such as how sure the model was.
     fn read_answer(&mut self, _answer: &Answer) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::flow::form_flow::CheckedAgreement;
+
+    #[test]
+    fn answer_with_a_bool_key_is_held_to_true_or_false() {
+        assert_eq!(
+            json_schema::<CheckedAgreement>(),
+            json!({
+                "type": "object",
+                "properties": { "is_question": { "type": "boolean" } },
+                "required": ["is_question"],
+                "additionalProperties": false,
+            })
+        );
+    }
+
+    /// The agreement checker is right about a question because it sees nothing of the form.
+    #[test]
+    fn machine_that_judges_the_utterance_alone_is_shown_nothing_of_the_call() {
+        let schema = json_schema::<CheckedAgreement>();
+        let prompt = Machine::form_agreement_checker()
+            .render_system_prompt::<CheckedAgreement>(&schema, &[], &[])
+            .unwrap();
+
+        assert!(prompt.contains("\"is_question\": \"boolean\""));
+        for of_the_call in ["<conversation_history>", "<context>", "form_state"] {
+            assert!(!prompt.contains(of_the_call), "{of_the_call} is in the prompt:\n{prompt}");
+        }
+    }
 }

@@ -1,12 +1,14 @@
 use std::fmt::Display;
+use lingua::Language;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::types::chrono::Local;
 use time::format_description::well_known::Iso8601;
 use time::Date;
 use crate::app::AppState;
-use crate::domain::call::FormSupported;
+use crate::domain::call::{flat_enum, FormSupported};
 use crate::domain::flow::main_menu_flow::HintMap;
+use crate::vocabulary::{vocabulary, FormVocabulary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +87,15 @@ impl FormFieldValue {
             FormFieldValue::SpokenTime(_) => FormFieldKind::SpokenTime,
         }
     }
+
+    /// The value as it is said to the caller: a date in words, and a text without the full stop
+    /// the caller's sentence ended with.
+    pub fn spoken(&self, language: Language) -> String {
+        match self {
+            FormFieldValue::Date(date) => vocabulary().dates.spoken(*date, language),
+            value => value.to_string().trim_end_matches(['.', ',', ';', '!', '?', ' ']).to_string(),
+        }
+    }
 }
 
 impl Display for FormFieldValue {
@@ -139,11 +150,12 @@ impl Form {
         }
     }
 
-    /// Adds the next step. Two steps next to each other must not take the same
+    /// Adds the next step. What the machines read about it is its `description` in the vocabulary.
+    /// Two steps next to each other must not take the same
     /// kind of value: an answer meant for one also fits the other, so the caller
     /// or the context extractor can put it in the wrong field, e.g. a corrected date
     /// of birth taken for the appointment date that is asked for right after it.
-    pub fn field(mut self, name: &str, description: &str, kind: FormFieldKind) -> Self {
+    pub fn field(mut self, name: &str, kind: FormFieldKind) -> Self {
         if let Some(previous) = self.fields.last() {
             assert!(
                 !previous.kind.is_like(kind),
@@ -155,7 +167,7 @@ impl Form {
 
         self.fields.push(FormField {
             name: name.to_string(),
-            description: description.to_string(),
+            description: self.kind.vocabulary().field(name).description.clone(),
             kind,
             value: None,
             state: StepState::Queued,
@@ -188,14 +200,6 @@ impl Form {
         let target = self.fields.iter().position(|field| field.name == name);
 
         matches!((current, target), (Some(current), Some(target)) if target > current)
-    }
-
-    /// Whether a field holds a value it does not hold in `before`, the same form at an earlier point.
-    pub fn holds_new_value(&self, before: &Form) -> bool {
-        self.fields
-            .iter()
-            .zip(&before.fields)
-            .any(|(field, was)| field.value.is_some() && field.value != was.value)
     }
 
     /// The fields an utterance can give a value for. While the caller is on a field, a later field that
@@ -284,16 +288,22 @@ impl Form {
 }
 
 impl FormSupported {
+    /// The form with its fields in the order they are asked for. Every text of a field is in the
+    /// vocabulary, under the form's name and the field's.
     pub fn build(self) -> Form {
         match self {
             FormSupported::DoctorAppointment => Form::new(self)
-                .field("patient_name", "Full name of the patient", FormFieldKind::String)
-                .field("date_of_birth", "Patient's date of birth", FormFieldKind::Date)
-                .field("reason", "Reason for the visit", FormFieldKind::String)
-                // Not "Preferred date": German replies then asked for "den bevorzugten Termin für den Termin"
-                .field("appointment_date", "Date of the appointment", FormFieldKind::SpokenDate)
-                .field("appointment_time", "Preferred time of the appointment", FormFieldKind::SpokenTime),
+                .field("patient_name", FormFieldKind::String)
+                .field("date_of_birth", FormFieldKind::Date)
+                .field("reason", FormFieldKind::String)
+                .field("appointment_date", FormFieldKind::SpokenDate)
+                .field("appointment_time", FormFieldKind::SpokenTime),
         }
+    }
+
+    /// What the form says and what its fields are asked with.
+    pub fn vocabulary(self) -> &'static FormVocabulary {
+        vocabulary().form(self)
     }
 
     /// Asks the validators of a field about a value the field is about to take. They are found by
@@ -317,9 +327,21 @@ impl FormSupported {
     }
 }
 
-/// Why a validator refused a value, written for the response formulator: what to tell the caller.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ValidationError(pub String);
+flat_enum! {
+    /// Why a validator refused a value. What the caller is told is under
+    /// `[validation.<variant in snake_case>]` in the vocabulary.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ValidationError {
+        DateOfBirthInTheFuture,
+    }
+}
+
+impl ValidationError {
+    pub fn say(self, language: Language) -> &'static str {
+        vocabulary().validation(self).say(language)
+    }
+}
 
 /*
     Validators: each gets the app state and the value its field is about to take
@@ -331,7 +353,7 @@ async fn date_of_birth_not_in_the_future(_: &AppState, value: &FormFieldValue) -
 
     match value {
         FormFieldValue::Date(date) if today.is_some_and(|today| *date > today) => {
-            Err(ValidationError("A date of birth cannot be in the future. Tell the caller that.".to_string()))
+            Err(ValidationError::DateOfBirthInTheFuture)
         }
         _ => Ok(()),
     }
@@ -382,20 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn only_a_recorded_value_is_new_to_the_form() {
-        let mut form = FormSupported::DoctorAppointment.build();
-        let before = form.clone();
-        form.fill_field("patient_name", FormFieldValue::String("John Smith".into()));
-        assert!(form.holds_new_value(&before));
+    fn value_is_said_the_way_it_is_spoken() {
+        let spoken = |kind: FormFieldKind, text| kind.parse(text).unwrap().spoken(Language::German);
 
-        // Confirming a value or dropping it puts none into the form
-        let before = form.clone();
-        form.confirm_current();
-        assert!(!form.holds_new_value(&before));
-        form.fill_field("date_of_birth", FormFieldKind::Date.parse("1991-06-13").unwrap());
-        let before = form.clone();
-        form.reject_current();
-        assert!(!form.holds_new_value(&before));
+        assert_eq!(spoken(FormFieldKind::Date, "1991-06-13"), "13. Juni 1991");
+        // The full stop of the caller's sentence would end the sentence the value is read back in
+        assert_eq!(spoken(FormFieldKind::String, "Er hat starke Kopfschmerzen."), "Er hat starke Kopfschmerzen");
+        assert_eq!(spoken(FormFieldKind::SpokenTime, "15 uhr"), "15 uhr");
     }
 
     #[test]

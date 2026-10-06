@@ -1,7 +1,6 @@
 use std::default::Default;
 use crate::cache::{Cache, CacheKey};
 use crate::domain::call::{CallAction, CallerIntent};
-use crate::domain::flow::{form_flow, main_menu_flow};
 use crate::domain::flow::main_menu_flow::HintMap;
 use crate::domain::form::Form;
 use serde::{Deserialize, Serialize};
@@ -12,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::OwnedMutexGuard;
 use lingua::{IsoCode639_1, Language};
 use crate::settings::AppSettings;
+use crate::vocabulary::Phrase;
 
 const FORM_STATE_CONTEXT_KEY: &str = "form_state";
 const LANGUAGE_CONTEXT_KEY: &str = "language";
@@ -29,10 +29,6 @@ pub struct CallSession {
 
     // Current time, service name, phone number, what was done on backend, info from backend
     pub call_turn_context: HashMap<String, String>,
-
-    // Whether the form in progress goes into the context. The intent handler says so for the response
-    // formulator, the way it writes `response_context`
-    pub shows_form_state: bool,
 
     // What the turn came to besides the spoken response
     pub call_turn_outcome: CallTurnOutcome,
@@ -92,7 +88,6 @@ impl CallSession {
             state_before_turn: data.state.clone(),
             call_id: call_id.into(),
             call_turn_context: Default::default(),
-            shows_form_state: true,
             call_turn_outcome: Default::default(),
             data,
         }
@@ -145,11 +140,13 @@ impl CallSession {
         self.data.state = self.state_before_turn.clone();
         self.call_turn_outcome.action = CallAction::Continue;
 
+        // Fixed sentences, because the machine that would word one is the one that failed. Inside a
+        // form the caller only has to say it again: the form is as it was.
         let apology = match self.data.state {
-            CallState::Idle => main_menu_flow::failed_turn_response(self.data.language),
-            CallState::FormInProgress(..) => form_flow::failed_turn_response(self.data.language),
+            CallState::Idle => Phrase::TurnFailedInMainMenu,
+            CallState::FormInProgress(..) => Phrase::TurnFailedInForm,
         };
-        self.save_last_exchange(utterance, apology);
+        self.save_last_exchange(utterance, apology.say(self.data.language));
     }
 
     pub fn merge_filled_hint_map_values(&mut self, hint_map_input: HintMap) {
@@ -175,7 +172,7 @@ impl CallSession {
     pub fn context(&self) -> HashMap<String, String> {
         let mut context = self.call_turn_context.clone();
 
-        if let (CallState::FormInProgress(form), true) = (&self.data.state, self.shows_form_state) {
+        if let CallState::FormInProgress(form) = &self.data.state {
             context.insert(FORM_STATE_CONTEXT_KEY.to_string(), form.context_value());
         }
 

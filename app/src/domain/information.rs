@@ -1,4 +1,5 @@
 use crate::domain::call::GetInformationSupported;
+use crate::vocabulary::{fill_in, vocabulary};
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
@@ -10,15 +11,32 @@ const EUR_EXCHANGE_RATE_URL: &str =
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 impl GetInformationSupported {
-    /// Fetches the facts the response formulator answers from.
+    /// Fetches the facts the response formulator answers from, worded as the vocabulary has them.
     pub async fn fetch(self, http: &Client) -> anyhow::Result<String> {
+        let (facts, instructions) = (&vocabulary().facts, &vocabulary().instructions);
+
         match self {
+            // In words: from a weather code and a number of degrees the formulator made a sky and a wind up.
             GetInformationSupported::GetCurrentWeatherInBerlin => {
                 let forecast = get_json(http, BERLIN_WEATHER_URL).await?;
+                let now = &forecast["current_weather"];
+                let (Some(code), Some(temperature), Some(windspeed), Some(degrees)) = (
+                    now["weathercode"].as_u64(),
+                    now["temperature"].as_f64(),
+                    now["windspeed"].as_f64(),
+                    now["winddirection"].as_f64(),
+                ) else {
+                    anyhow::bail!("No current weather in {forecast}");
+                };
 
-                Ok(format!(
-                    "Current weather in Berlin: {} (units: {}, weathercode is a WMO weather code)",
-                    forecast["current_weather"], forecast["current_weather_units"]
+                Ok(fill_in(
+                    &facts.weather,
+                    &[
+                        ("sky", facts.sky(code)),
+                        ("temperature", temperature.to_string().as_str()),
+                        ("windspeed", windspeed.to_string().as_str()),
+                        ("direction", facts.direction(degrees)),
+                    ],
                 ))
             }
             GetInformationSupported::GetCurrentUAHPerEUR => {
@@ -26,15 +44,17 @@ impl GetInformationSupported {
                 let rate = &rates[0];
                 anyhow::ensure!(rate["rate"].is_number(), "No EUR rate in {rates}");
 
-                Ok(format!(
-                    "1 EUR = {} UAH, the official National Bank of Ukraine rate for {}",
-                    rate["rate"],
-                    rate["exchangedate"].as_str().unwrap_or("today")
+                Ok(fill_in(
+                    &facts.exchange_rate,
+                    &[
+                        ("rate", rate["rate"].to_string().as_str()),
+                        ("date", rate["exchangedate"].as_str().unwrap_or(&facts.today)),
+                    ],
                 ))
             }
             // Nothing to fetch for these two: the first is turned down, the second is answered from the form state.
-            GetInformationSupported::CalendarHelp => Ok("The caller asked about dates or the calendar, which you cannot help with. Say you are sorry that you cannot help with dates".into()),
-            GetInformationSupported::FormInformation => Ok("The caller asked about the form. Answer it in one sentence, then say the next step in a sentence of its own.".to_string()),
+            GetInformationSupported::CalendarHelp => Ok(instructions.calendar_help.clone()),
+            GetInformationSupported::FormInformation => Ok(instructions.form_question.clone()),
             // Not fetched either: the main menu answers it from the call's hints, see `HintMap::last_filled_out_form_information`.
             GetInformationSupported::LastFilledOutFormInformation => anyhow::bail!("{self} is answered from the hints of the call"),
         }

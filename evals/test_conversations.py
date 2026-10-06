@@ -5,13 +5,15 @@
 """
 import pytest
 
-from suite import ANY, check_conversation, conversation, has
+from suite import ANY, check_conversation, conversation, has, phrase, refusal
 
 PROVIDE = "provide_form_field_value"
 CORRECT = "correct_form_field_value"
 DOCTOR = "start_form[doctor_appointment]"
+FORM_QUESTION = "get_information[form_information]"
 WEATHER = "get_information[get_current_weather_in_berlin]"
-FUTURE = ["was not recorded for date_of_birth", "A date of birth cannot be in the future"]
+# What the validator of the date of birth tells a German caller
+FUTURE = [refusal("date_of_birth_in_the_future", "de")]
 
 GOLDENS = [
     # ── German ─────────────────────────────────────────────────────────────────────────────────────
@@ -38,8 +40,7 @@ GOLDENS = [
 
     conversation(
         "booking-short-answers-de", "A caller books a doctor's appointment with the short answers a form gets.",
-        lang="de", capability="book an appointment",
-        known_gap="a bare German date is detected as English (gap 1)", steps=[
+        lang="de", capability="book an appointment", steps=[
             ("Ich brauche einen Arzttermin.", dict(intent=DOCTOR, form={"patient_name": ["queued", None]})),
             ("Hans Müller", dict(intent=PROVIDE, form={"patient_name": ["awaiting_confirmation", "Hans Müller"]})),
             ("Ja", dict(intent="confirm_yes", form={"patient_name": ["completed", "Hans Müller"]})),
@@ -85,7 +86,7 @@ GOLDENS = [
             ("Der Patient heißt Hans Müller.", dict(intent=PROVIDE, form={"patient_name": ["awaiting_confirmation", "Hans Müller"]})),
             ("Nein, er heißt Hans Möller.", dict(intent=CORRECT, form={"patient_name": ["awaiting_confirmation", "Hans Möller"]})),
             ("Ja, das ist richtig.", dict(intent="confirm_yes", form={"patient_name": ["completed", "Hans Möller"]})),
-            ("Er ist am 13. Juni 2091 geboren.", dict(context=FUTURE, form={"date_of_birth": ["queued", None]})),
+            ("Er ist am 13. Juni 2091 geboren.", dict(says=FUTURE, form={"date_of_birth": ["queued", None]})),
             ("Entschuldigung, er ist am 13. Juni 1991 geboren.", dict(form={"date_of_birth": ["awaiting_confirmation", "1991-06-13"]})),
             ("Ja, das stimmt.", dict(intent="confirm_yes", form={"date_of_birth": ["completed", "1991-06-13"]})),
             ("Er hat Rückenschmerzen.", dict(intent=PROVIDE, form={"reason": ["awaiting_confirmation", has("rückenschmerzen")]})),
@@ -113,8 +114,7 @@ GOLDENS = [
             ("Nein, das stimmt nicht.", dict(form={"patient_name": ["queued", None]})),
             ("Der Patient heißt Hans Müller.", dict(form={"patient_name": ["awaiting_confirmation", "Hans Müller"]})),
             ("Nein, das ist wieder falsch.", dict(
-                form={"patient_name": ["queued", None]}, context=["rejected the value for patient_name 3 times", "offer to transfer"],
-                says=[["Mitarbeiter", "Mensch", "Kolleg", "Agent", "Person", "verbind", "weiterleit"]], asks="any")),
+                form={"patient_name": ["queued", None]}, says=[phrase("offer_human", "de")], asks="any")),
             ("Ja, bitte verbinden Sie mich mit einem Mitarbeiter.", dict(intent="transfer_to_human", action="transfer_to_human")),
         ]),
 
@@ -124,12 +124,35 @@ GOLDENS = [
             ("Ich möchte einen Arzttermin vereinbaren.", dict(intent=DOCTOR)),
             ("Wie ist das Wetter in Berlin?", dict(intent="unsupported", form="unchanged", never_says=[["Grad", "°"]])),
             ("Der Patient heißt Hans Müller.", dict(intent=PROVIDE, form={"patient_name": ["awaiting_confirmation", "Hans Müller"]})),
-            ("Welchen Namen haben Sie notiert?", dict(intent="get_information[form_information]", form="unchanged", says=[["Hans"], ["Müller"]])),
+            ("Welchen Namen haben Sie notiert?", dict(intent=FORM_QUESTION, form="unchanged", says=[["Hans"], ["Müller"]])),
             ("Wie bitte? Können Sie das wiederholen?", dict(intent="repeat", form="unchanged")),
             ("Ja, das ist richtig.", dict(intent="confirm_yes", form={"patient_name": ["completed", "Hans Müller"]})),
             ("Ich möchte das abbrechen.", dict(intent="cancel_form", form="none", asks="anything_else")),
             # Back in the main menu the weather is answered again
             ("Wie ist das Wetter in Berlin?", dict(intent=WEATHER, form="none", says=[["Grad", "°"]])),
+        ]),
+
+    conversation(
+        "question-is-not-a-yes-de", "When a value is read back the caller first asks whether the appointment is confirmed or written down right. No question confirms a value, and the one about the last value does not send the form.",
+        lang="de", capability="question about the form", steps=[
+            ("Ich möchte einen Arzttermin für meinen Sohn Lukas Schneider, morgen um 15 Uhr.", dict(
+                intent=DOCTOR, form={"patient_name": ["awaiting_confirmation", "Lukas Schneider"]})),
+            ("Ist der Termin damit schon bestätigt?", dict(intent=FORM_QUESTION, form="unchanged")),
+            ("Ja, das ist richtig.", dict(intent="confirm_yes", form={"patient_name": ["completed", "Lukas Schneider"]})),
+            ("Er ist am 4. März 2015 geboren.", dict(intent=PROVIDE, form={"date_of_birth": ["awaiting_confirmation", "2015-03-04"]})),
+            ("Haben Sie das richtig notiert?", dict(intent=FORM_QUESTION, form="unchanged")),
+            ("Ja, das stimmt.", dict(intent="confirm_yes", form={"date_of_birth": ["completed", "2015-03-04"]})),
+            ("Er hat Fieber und Husten.", dict(intent=PROVIDE, form={"reason": ["awaiting_confirmation", has("fieber")]})),
+            ("Ja, genau.", dict(intent="confirm_yes", form={"reason": ["completed", ANY],
+                                                           "appointment_date": ["awaiting_confirmation", has("morgen")]})),
+            ("Ja, das passt.", dict(intent="confirm_yes", form={"appointment_date": ["completed", has("morgen")],
+                                                               "appointment_time": ["awaiting_confirmation", has("15")]})),
+            # The last value, asked the way a speech recognizer writes it: a yes here completes the form
+            ("Ist der Termin jetzt bestätigt", dict(intent=FORM_QUESTION, form="unchanged")),
+            ("Ja, das ist gut so.", dict(
+                intent="confirm_yes", form="none", asks="anything_else",
+                completed={"patient_name": "Lukas Schneider", "date_of_birth": "2015-03-04", "reason": has("fieber"),
+                           "appointment_date": has("morgen"), "appointment_time": has("15")})),
         ]),
 
     conversation(

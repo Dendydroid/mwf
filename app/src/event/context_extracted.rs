@@ -4,7 +4,7 @@ use crate::domain::call_session::CallSession;
 use crate::event::event_bus::{Dispatcher, Event, EventHandler};
 use tracing::log::error;
 use crate::domain::flow::{FlowContext, IntentMatched};
-use crate::domain::flow::form_flow::ExtractedFormIntent;
+use crate::domain::flow::form_flow::{CheckedAgreement, ExtractedFormIntent};
 use crate::domain::flow::main_menu_flow::ExtractedMainMenuIntent;
 use crate::domain::machine::Machine;
 use crate::event::intent_matched::IntentMatchedEvent;
@@ -92,6 +92,20 @@ impl EventHandler<ContextExtractedEvent> for ContextExtractedHandler {
                         &session,
                     )
                     .await;
+
+                // A question is never an agreement. The matcher takes one for it when it asks whether
+                // something is right or confirmed, so what it took for an agreement is checked.
+                let matched = match matched {
+                    Ok(intent) if intent.is_agreement() => Machine::form_agreement_checker()
+                        .query_utterance_alone::<CheckedAgreement>(
+                            &self.llm,
+                            &event.utterance,
+                            &session,
+                        )
+                        .await
+                        .map(|checked| if checked.is_question() { intent.as_question() } else { intent }),
+                    matched => matched,
+                };
 
                 // Released first: the next handler locks the session itself.
                 drop(session);

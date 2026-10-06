@@ -7,6 +7,11 @@ Everything described under "Built" is in the working tree and **not committed**.
 `context.md` says what the code is as a whole. This file is about one day's work on the form flow: what was built,
 what was measured about it, what was suggested and what became of it, and what is still open.
 
+**Later the same day** the replies of a form became code's, worded from `app/config/llm_vocabulary.toml` (see
+`task1.md`). Findings 1 to 3 about the extractor still hold. Findings 4 to 7 and "Still open" are about how the
+formulator worded a step, which it no longer does: `<next_step>`, `shows_form_state` and `Form::holds_new_value`
+are gone.
+
 ---
 
 ## In short

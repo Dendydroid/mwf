@@ -46,7 +46,8 @@ pub struct CallerSpokeHandler {
 
 impl EventHandler<CallerSpokeEvent> for CallerSpokeHandler {
     async fn handle(&self, event: &mut CallerSpokeEvent, dispatcher: &Dispatcher) {
-        // 1. Detect language (Not trusting language provided in request)
+        // 1. Detect language (Not trusting language provided in request). An utterance too short to
+        //    tell keeps the language the call has
         let mut session = event.call_session.write().await;
         if let Some(language_detected_iso_639_1) = detect_language(&event.utterance) {
             session.set_language(

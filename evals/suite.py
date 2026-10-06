@@ -20,7 +20,13 @@
     known_gap    the gap of context.md the golden shows. Its failure is reported and does not fail the run
 
     A value is None for no value, a text it has to equal, or `has(...)`.
+
+    What code says as it is comes from the app's vocabulary, so a golden names the text by its key
+    (`phrase`, `refusal`, `form_says`, `ask`, `confirm`) and `says` takes it word for word.
 """
+import tomllib
+from pathlib import Path
+
 import pytest
 from deepeval import assert_test
 from deepeval.dataset import ConversationalGolden, Golden
@@ -59,6 +65,39 @@ NO_HINTS = {
     "appointment_spoken_date": None,
     "appointment_spoken_time": None,
 }
+
+
+# The texts the app says as they are, from the file the app reads them from
+VOCABULARY = tomllib.loads(
+    (Path(__file__).resolve().parent.parent / "app" / "config" / "llm_vocabulary.toml").read_text(encoding="utf-8")
+)
+DOCTOR_FORM = VOCABULARY["forms"]["doctor_appointment"]
+
+
+def phrase(name, lang):
+    """A sentence code says in any form, e.g. `phrase("thanks", "de")`. Like the four below it is what
+    `says` takes for one thing the reply has to hold: the wordings that count, here the only one."""
+    return [VOCABULARY["phrases"][name][lang]]
+
+
+def refusal(name, lang):
+    """What a validator tells the caller."""
+    return [VOCABULARY["validation"][name][lang]]
+
+
+def form_says(what, lang):
+    """What the doctor form says when it is `started`, `completed` or `cancelled`."""
+    return [DOCTOR_FORM[what][lang]]
+
+
+def ask(field, lang):
+    """The question that asks for a field of the doctor form."""
+    return [DOCTOR_FORM["fields"][field]["ask"][lang]]
+
+
+def confirm(field, value, lang):
+    """The question that reads `value` back for a field of the doctor form."""
+    return [DOCTOR_FORM["fields"][field]["confirm"][lang].replace("{value}", value)]
 
 
 def golden(name, utterance, **expect):

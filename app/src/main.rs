@@ -10,6 +10,7 @@ mod routes;
 mod session;
 mod settings;
 mod vllm;
+mod vocabulary;
 
 #[cfg(test)]
 mod tests;
@@ -32,6 +33,7 @@ use uuid::Uuid;
 use crate::domain::call_session::CallSession;
 use crate::event::call_session_loaded::CallSessionLoadedEvent;
 use crate::event::caller_spoke::CallerSpokeEvent;
+use crate::vocabulary::vocabulary;
 
 const LOG_FILE_PREFIX: &str = "app.log";
 
@@ -143,6 +145,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(directory) = &log_dir {
         info!("Writing logs to {}/{}.<date>", directory, LOG_FILE_PREFIX);
     }
+
+    // Before the first call: a text the code asks for and the vocabulary does not have stops the app here.
+    vocabulary().check();
 
     let state = Arc::new(AppState::new(settings).await);
 

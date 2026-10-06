@@ -5,10 +5,10 @@
 import pytest
 
 from assistant import Call
-from suite import NO_HINTS, check_turn, golden, has
+from suite import NO_HINTS, ask, check_turn, confirm, golden, has
 
 DOCTOR = "start_form[doctor_appointment]"
-ASK_NAME = ["Next, ask the caller for: Full name of the patient."]
+ASK_NAME = {lang: [ask("patient_name", lang)] for lang in ("de", "en")}
 
 GOLDENS = [
     # ── German ─────────────────────────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ GOLDENS = [
            lang="de", capability="hints fill the form", intent=DOCTOR,
            hints={"patient_full_name": "Lukas Schneider", "date_of_birth_iso_8601": None},
            form={"patient_name": ["awaiting_confirmation", "Lukas Schneider"], "date_of_birth": ["queued", None]},
-           context=["Next, ask the caller to confirm that Full name of the patient is Lukas Schneider."]),
+           says=[confirm("patient_name", "Lukas Schneider", "de")]),
 
     golden("date-and-time-de", "Ich brauche einen Arzttermin für morgen um 15 Uhr.",
            lang="de", capability="hints fill the form", intent=DOCTOR,
@@ -24,7 +24,7 @@ GOLDENS = [
                   "appointment_spoken_time": has("15")},
            form={"patient_name": ["queued", None], "appointment_date": ["awaiting_confirmation", has("morgen")],
                  "appointment_time": ["awaiting_confirmation", has("15")]},
-           context=ASK_NAME),
+           says=ASK_NAME["de"]),
 
     golden("name-and-birth-de", "Meine Tochter Mia Wagner, geboren am 4. März 2015, braucht einen Termin beim Arzt.",
            lang="de", capability="hints fill the form", intent=DOCTOR,
@@ -53,8 +53,7 @@ GOLDENS = [
     golden("callers-own-name-de", "Guten Tag, hier ist Anna Becker. Ich brauche einen Arzttermin.",
            lang="de", capability="hints fill the form", intent=DOCTOR,
            hints={"caller_full_name": "Anna Becker", "patient_full_name": None},
-           form={"patient_name": ["queued", None]}, context=ASK_NAME,
-           known_gap="the start-of-form reply skips the name step when the caller gave their own name"),
+           form={"patient_name": ["queued", None]}, says=ASK_NAME["de"]),
 
     # Hints are kept for the call: a later turn adds to them and takes none away
     golden("kept-over-turns-de", "Ich möchte einen Arzttermin für meine Frau Sabine Schulz vereinbaren.",
@@ -71,7 +70,7 @@ GOLDENS = [
            lang="en", capability="hints fill the form", intent=DOCTOR,
            hints={"patient_full_name": "Lucas Miller", "date_of_birth_iso_8601": None},
            form={"patient_name": ["awaiting_confirmation", "Lucas Miller"], "date_of_birth": ["queued", None]},
-           context=["Next, ask the caller to confirm that Full name of the patient is Lucas Miller."]),
+           says=[confirm("patient_name", "Lucas Miller", "en")]),
 
     golden("date-and-time-en", "I need a doctor's appointment for tomorrow at 3 pm.",
            lang="en", capability="hints fill the form", intent=DOCTOR,
@@ -80,7 +79,7 @@ GOLDENS = [
            form={"patient_name": ["queued", None],
                  "appointment_date": ["awaiting_confirmation", has("tomorrow")],
                  "appointment_time": ["awaiting_confirmation", has(("3", "15"))]},
-           context=ASK_NAME),
+           says=ASK_NAME["en"]),
 
     golden("name-and-birth-en", "My daughter Emma Clark, born on March 4th 2015, needs to see a doctor.",
            lang="en", capability="hints fill the form", intent=DOCTOR,
@@ -96,8 +95,7 @@ GOLDENS = [
     golden("callers-own-name-en", "Hello, my name is John Smith. I need a doctor appointment.",
            lang="en", capability="hints fill the form", intent=DOCTOR,
            hints={"caller_full_name": "John Smith", "patient_full_name": None},
-           form={"patient_name": ["queued", None]}, context=ASK_NAME,
-           known_gap="the start-of-form reply skips the name step when the caller gave their own name"),
+           form={"patient_name": ["queued", None]}, says=ASK_NAME["en"]),
 
     golden("nothing-to-take-en", "What's the weather like in Berlin?",
            lang="en", capability="hints are kept", hints=NO_HINTS),

@@ -2,12 +2,15 @@
 /*
     A call is always in one flow, like in one menu of a game: the main menu, or a form once it is started.
     Each flow has its own machines, so they only know what the caller can say in it.
+
+    Every text a flow says or shows a machine is in the vocabulary (`config/llm_vocabulary.toml`).
 */
 use schemars::JsonSchema;
 use serde::Deserialize;
 use crate::domain::flow::form_flow::{ExtractedFormIntent, ExtractedFormValues};
 use crate::domain::flow::main_menu_flow::{ExtractedMainMenuIntent, HintMap};
 use crate::domain::machine::{OutputFormat, ValueSchema};
+use crate::vocabulary::vocabulary;
 
 /// What the context extractor of the flow took from the utterance.
 pub enum FlowContext {
@@ -22,12 +25,31 @@ pub enum IntentMatched {
     Form(ExtractedFormIntent, ExtractedFormValues),
 }
 
+/// Who words what the caller hears in a turn.
+pub enum Reply {
+    /// Code: sentences of the vocabulary, said as they are.
+    Said(String),
+    /// The flow's response formulator, from what `<response_context>` tells it. `then` is what
+    /// code says after it.
+    Formulated { then: Option<String> },
+}
+
+/// Sentences as one reply, without the ones that are empty.
+pub fn sentences(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .filter(|part| !part.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(JsonSchema, Deserialize, Default, Debug)]
 struct Reasoning(String);
 
 impl ValueSchema for Reasoning {
     fn valid_value_description(&self) -> &'static str {
-        "A brief 1-sentence analysis of the conversation state based on rules and context."
+        &vocabulary().output_values.machine_reasoning
     }
 }
 
@@ -36,8 +58,7 @@ struct SpokenResponse(String);
 
 impl ValueSchema for SpokenResponse {
     fn valid_value_description(&self) -> &'static str {
-        "A natural, concise spoken reply of 1 to 2 sentences in plain text for text-to-speech, \
-        with numbers, currencies and dates written the way they are spoken"
+        &vocabulary().output_values.spoken_response
     }
 }
 
@@ -63,17 +84,17 @@ impl OutputFormat for FormulatedResponse {
 pub mod main_menu_flow {
     use reqwest::Client;
     use schemars::JsonSchema;
-    use lingua::Language;
     use serde::{Deserialize, Serialize};
     use tracing::error;
     use crate::app::AppState;
     use crate::domain::call::{CallAction, CallerIntent, FormSupported, GetInformationSupported};
     use crate::domain::call_session::{CallSession, CallState, CallTurnOutcome};
-    use crate::domain::flow::Reasoning;
+    use crate::domain::flow::{sentences, Reasoning, Reply};
     use crate::domain::flow::form_flow::next_step;
     use crate::domain::form::{Form, FormFieldValue};
     use crate::domain::machine::{AllowedValue, Machine, OutputFormat, ValueSchema};
     use crate::vllm::Answer;
+    use crate::vocabulary::{fill_in, vocabulary};
 
     #[derive(JsonSchema, Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
     pub struct HintMap {
@@ -112,16 +133,14 @@ pub mod main_menu_flow {
         /// What the formulator is told when the caller asks about the form they filled out last in the
         /// call: its summary, only if there is one.
         pub fn last_filled_out_form_information(&self) -> String {
+            let instructions = &vocabulary().instructions;
+
             match &self.last_filled_out_form {
-                Some(form) => format!(
-                    "The caller asked about the form they filled out last in this call. Summarize it in one \
-                    or two sentences: the {} form with {}.",
-                    form.kind,
-                    form.values_summary()
+                Some(form) => fill_in(
+                    &instructions.last_filled_out_form,
+                    &[("form", &form.kind.to_string()), ("values", &form.values_summary())],
                 ),
-                None => "The caller asked about a form they filled out in this call, but none was filled out \
-                    yet. Say so and summarize nothing."
-                    .to_string(),
+                None => instructions.no_filled_out_form.clone(),
             }
         }
 
@@ -157,7 +176,7 @@ pub mod main_menu_flow {
         }
 
         fn valid_value_description(&self) -> &'static str {
-            "what <utterance> says for it, or null when <utterance> does not say it"
+            &vocabulary().output_values.hint
         }
     }
 
@@ -200,7 +219,7 @@ pub mod main_menu_flow {
         }
 
         fn valid_value_description(&self) -> &'static str {
-            "Caller's intended action, or `unsupported` when none of the other values fits"
+            &vocabulary().output_values.caller_intent
         }
     }
 
@@ -242,59 +261,32 @@ pub mod main_menu_flow {
 
     impl Machine {
         pub fn main_menu_context_extractor() -> Self {
-            Self {
-                role: "You are a context extractor machine. You receive a <utterance> on the input and provide the values in a predefined <json_output_format> as output.".into(),
-                rules: vec![
-                    "Each extracted value must only be set once in one property of <json_output_format>.".into(),
-                    "If value cannot be derived from <utterance>, set the key to null.".into(),
-                    "Write `date_of_birth_iso_8601` as YYYY-MM-DD.".into(),
-                    "Write `appointment_spoken_date` and `appointment_spoken_time` in the caller's own words, without working a date or time out.".into(),
-                ],
-            }
+            Self::from(&vocabulary().machines.main_menu_context_extractor)
         }
 
         pub fn main_menu_intent_matcher() -> Self {
-            Self {
-                role: "You are the intent matcher. Classify what the caller wants with their latest <utterance>.".into(),
-                rules: [
-                    "Classify only the latest <utterance>. Use <conversation_history> to understand short or \
-                elliptical answers such as \"yes\", \"the second one\" or a bare name",
-                ]
-                    .map(String::from)
-                    .to_vec(),
-            }
+            Self::from(&vocabulary().machines.main_menu_intent_matcher)
         }
 
         pub fn main_menu_response_formulator() -> Self {
-            Self {
-                role: "You are the voice of a phone assistant. Reply to the caller's <utterance> from what \
-                <context> gives you, as natural speech."
-                    .to_string(),
-                rules: [
-                    "Reply in the language given by <language> in <context>",
-                    "Only ask one question in reply",
-                    "When introducing an abbreviation or acronym, expand it to its full form on first mention (e.g., 'API (Application Programming Interface)'). For common everyday terms like ID, HTML, or USB, keep them as abbreviations.",
-                    "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
-                    "Follow <response_context> instructions when answering and take its content into consideration"
-                ]
-                    .map(String::from)
-                    .to_vec()
-            }
+            Self::from(&vocabulary().machines.main_menu_response_formulator)
         }
     }
 
+    /// Returns who words the reply: code on the turn that starts a form, the formulator otherwise.
     pub async fn main_menu_intent_context_handler(
         intent: &ExtractedMainMenuIntent,
         session: &mut CallSession,
         http_client: &Client,
         app_state: &AppState,
-    ) {
+    ) -> Reply {
         let caller_intent = CallerIntent::from_label(intent.caller_intent())
             .unwrap_or(CallerIntent::Unsupported);
 
         session.call_turn_outcome = CallTurnOutcome::matched(caller_intent, intent.machine_reasoning(), intent.confidence());
 
         let has_conversation_history = session.data.call_memory.conversation.len() > 0;
+        let instructions = &vocabulary().instructions;
 
         let backend_context = match caller_intent {
             // Not fetched: the call's own hints have the form.
@@ -306,54 +298,41 @@ pub mod main_menu_flow {
                 Err(e) => {
                     error!(call_id = %session.call_id, "Could not fetch {selected}: {e:#}");
 
-                    "Politely apologize, state that the requested service is unavailable at the moment.".into()
+                    instructions.service_unavailable.clone()
                 }
             },
-            CallerIntent::StartForm { form } => start_form(
+            // A form's replies are code's, its first one too.
+            CallerIntent::StartForm { form } => return Reply::Said(start_form(
                 form,
                 app_state,
                 session,
-            ).await,
-            CallerIntent::Repeat if has_conversation_history => "The caller asked to hear your last reply from <conversation_history>."
-                .to_string(),
+            ).await),
+            CallerIntent::Repeat if has_conversation_history => instructions.repeat.clone(),
             CallerIntent::EndCall => {
                 session.call_turn_outcome.action = CallAction::EndCall;
 
-                "The caller is ending the call. Say a short, friendly goodbye and ask nothing.".to_string()
+                instructions.end_call.clone()
 
                 // TODO: End call logic
             }
             CallerIntent::TransferToHuman => {
                 session.call_turn_outcome.action = CallAction::TransferToHuman;
 
-                "Tell the caller you are transferring them to a human agent now, and ask nothing.".to_string()
+                instructions.transfer.clone()
 
                 // TODO: Transfer to human logic
             }
             // CallerIntent::Unsupported | CallerIntent::Repeat if has_conversation_just_started
             _ => {
-                let not_listed = [
-                    CallerIntent::Unsupported,
-                    CallerIntent::GetInformation { selected: GetInformationSupported::CalendarHelp },
-                    CallerIntent::GetInformation { selected: GetInformationSupported::LastFilledOutFormInformation },
-                    CallerIntent::Repeat,
-                    CallerIntent::EndCall,
-                    CallerIntent::TransferToHuman,
-                ]
-                    .map(|intent| intent.to_string());
-
-                let supported = IntendedMainMenuAction::default()
+                // What the menu has an `offer` for in the vocabulary, each as it is named there
+                let offers = IntendedMainMenuAction::default()
                     .allowed_values()
                     .iter()
-                    .map(ToString::to_string)
-                    .filter(|value| !not_listed.contains(value))
+                    .filter_map(|value| vocabulary().intent(&value.to_string()).offer.as_deref())
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                format!(
-                    "The caller asked for something that is not supported. Politely say so \
-                    and list, in plain words, what you can help with instead: {supported}."
-                )
+                fill_in(&instructions.unsupported, &[("offers", &offers)])
             },
         };
 
@@ -361,40 +340,26 @@ pub mod main_menu_flow {
             "response_context".into(),
             backend_context
         );
+
+        Reply::Formulated { then: None }
     }
 
-    /// What the caller hears when the turn failed on our side. Fixed text, because the machine
-    /// that would phrase it is the one that failed. Lists what `IntendedMainMenuAction` offers.
-    pub fn failed_turn_response(language: Language) -> &'static str {
-        match language {
-            Language::German => "Entschuldigung, bei uns ist ein Fehler aufgetreten, bitte versuchen Sie es noch \
-                einmal. Ich kann Ihnen das aktuelle Wetter in Berlin oder den Wechselkurs von Hrywnja zu Euro \
-                nennen oder einen Arzttermin für Sie buchen.",
-            Language::Russian => "Извините, на нашей стороне произошла ошибка, пожалуйста, попробуйте ещё раз. \
-                Я могу подсказать текущую погоду в Берлине, курс гривны к евро или записать вас на приём к врачу.",
-            Language::Ukrainian => "Вибачте, на нашому боці сталася помилка, будь ласка, спробуйте ще раз. \
-                Я можу підказати поточну погоду в Берліні, курс гривні до євро або записати вас на прийом до лікаря.",
-            _ => "Sorry, an error happened on our side, please try again. I can tell you the current weather in \
-                Berlin, the hryvnia to euro exchange rate, or book a doctor's appointment.",
-        }
-    }
-
+    /// Starts the form with what the caller already said in it. Returns what the caller hears: that
+    /// it is started, and the question of its first step.
     async fn start_form(form: FormSupported, app_state: &AppState, session: &mut CallSession) -> String {
+        let language = session.data.language;
         let mut built = form.build();
         session.data.call_memory.hint_map.prefill(&mut built, app_state).await;
-        let context = format!("Started the {form} form.");
-        session.call_turn_context.insert("next_step".into(), next_step(&built));
+        let reply = sentences(&[form.vocabulary().started.say(language), &next_step(&built, language)]);
         session.data.state = CallState::FormInProgress(built);
-        // Not shown to the formulator, like on a turn that puts a value into the form: the reply only asks
-        // for the first step (see `form_intent_context_handler`).
-        session.shows_form_state = false;
 
-        context
+        reply
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use lingua::Language;
         use crate::domain::form::StepState;
 
         #[test]
@@ -423,10 +388,9 @@ pub mod main_menu_flow {
                 form.find_field("appointment_time").unwrap().value,
                 Some(FormFieldValue::SpokenTime("in the morning".into()))
             );
-            assert_eq!(
-                next_step(&form),
-                "Next, ask the caller to confirm that Full name of the patient is John Smith."
-            );
+            // The first step reads the name back, in the vocabulary's words
+            let confirm = form.kind.vocabulary().field("patient_name").confirm.say(Language::English);
+            assert_eq!(next_step(&form, Language::English), fill_in(confirm, &[("value", "John Smith")]));
         }
     }
 }
@@ -442,10 +406,11 @@ pub mod form_flow {
     use crate::app::AppState;
     use crate::domain::call::{CallAction, CallerIntent, GetInformationSupported};
     use crate::domain::call_session::{CallSession, CallState, CallTurnOutcome};
-    use crate::domain::flow::Reasoning;
+    use crate::domain::flow::{sentences, Reasoning, Reply};
     use crate::domain::form::{Form, FormField, FormFieldKind, FormFieldValue, StepState, ValidationError};
     use crate::domain::machine::{AllowedValue, Machine, OutputFormat, ValueSchema};
     use crate::vllm::Answer;
+    use crate::vocabulary::{fill_in, vocabulary, Phrase};
 
     /// After this many rejected values for one field, the caller is offered a human.
     const MAX_CONFIRMATION_FAILURES: u8 = 3;
@@ -511,7 +476,7 @@ pub mod form_flow {
         }
 
         fn valid_value_description(&self) -> &'static str {
-            "Caller's intended action, or `unsupported` when none of the other values fits"
+            &vocabulary().output_values.caller_intent
         }
     }
 
@@ -536,6 +501,22 @@ pub mod form_flow {
         pub fn confidence(&self) -> Option<f64> {
             self.confidence
         }
+
+        /// Whether the matcher took the utterance for an agreement.
+        pub fn is_agreement(&self) -> bool {
+            self.caller_intent() == CallerIntent::ConfirmYes.to_string()
+        }
+
+        /// The answer for an utterance the matcher took for an agreement and the agreement checker
+        /// found to be a question: the caller did not agree, they asked about the form. The
+        /// confidence was the matcher's in the agreement.
+        pub fn as_question(mut self) -> Self {
+            let question = CallerIntent::GetInformation { selected: GetInformationSupported::FormInformation };
+            self.caller_intent = IntendedFormAction(question.to_string());
+            self.confidence = None;
+
+            self
+        }
     }
 
     impl OutputFormat for ExtractedFormIntent {
@@ -551,77 +532,147 @@ pub mod form_flow {
         }
     }
 
+    #[derive(JsonSchema, Deserialize, Default, Debug)]
+    struct IsQuestion(bool);
+
+    impl ValueSchema for IsQuestion {
+        fn valid_value_description(&self) -> &'static str {
+            &vocabulary().output_values.is_question
+        }
+    }
+
+    /// What the agreement checker says of an utterance the matcher took for an agreement.
+    #[derive(JsonSchema, Deserialize, Default, Debug)]
+    pub struct CheckedAgreement {
+        is_question: IsQuestion,
+    }
+
+    impl CheckedAgreement {
+        pub fn is_question(&self) -> bool {
+            self.is_question.0
+        }
+    }
+
+    impl OutputFormat for CheckedAgreement {
+        fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_> {
+            Box::new(vec![
+                ("is_question", &self.is_question as &dyn ValueSchema),
+            ].into_iter())
+        }
+    }
+
+    #[derive(JsonSchema, Deserialize, Default, Debug)]
+    struct SpokenAnswer(String);
+
+    impl ValueSchema for SpokenAnswer {
+        fn valid_value_description(&self) -> &'static str {
+            &vocabulary().output_values.spoken_answer
+        }
+    }
+
+    /// The form formulator's answer to a question about the form. Code asks the step's question
+    /// after it.
+    #[derive(JsonSchema, Deserialize, Default, Debug)]
+    pub struct FormulatedAnswer {
+        spoken_response: SpokenAnswer,
+    }
+
+    impl FormulatedAnswer {
+        /// Its first sentence. Told to answer in one sentence and ask nothing, the model still goes
+        /// on with a question or a step of its own in a third of its answers.
+        pub fn into_spoken_answer(self) -> String {
+            first_sentence(&self.spoken_response.0).to_string()
+        }
+    }
+
+    impl OutputFormat for FormulatedAnswer {
+        fn iter_schemas(&self) -> Box<dyn Iterator<Item=(&'static str, &dyn ValueSchema)> + '_> {
+            Box::new(vec![
+                ("spoken_response", &self.spoken_response as &dyn ValueSchema),
+            ].into_iter())
+        }
+    }
+
+    /// The first sentence of `text`. A full stop after one or two letters or digits does not end
+    /// it: the number of a day or a title, as in "13. Juni" and "Dr. Müller".
+    fn first_sentence(text: &str) -> &str {
+        let mut word_before = 0;
+
+        for (at, c) in text.char_indices() {
+            let after = at + c.len_utf8();
+            let ends_here = matches!(c, '.' | '!' | '?')
+                && text[after..].chars().next().map_or(true, char::is_whitespace)
+                && !(c == '.' && (1..=2).contains(&word_before));
+
+            if ends_here {
+                return &text[..after];
+            }
+            word_before = if c.is_alphanumeric() { word_before + 1 } else { 0 };
+        }
+
+        text
+    }
+
     impl Machine {
-        /// `language` is the one the caller speaks: the days and times they say are kept in it. The model
-        /// follows the examples into their language, and translated a day wrongly without anyone noticing
-        /// ("übermorgen" came out as "next monday").
+        /// `language` is the one the caller speaks: the days and times they say are kept in the
+        /// language the vocabulary's examples for it are in.
         pub fn form_context_extractor(language: Language) -> Self {
-            let (said_in, day, time_of_day) = match language {
-                Language::German => ("German", "\"nächsten samstag\" or \"morgen\"", "\"am vormittag\" or \"15 uhr\""),
-                _ => ("English", "\"next saturday\" or \"tomorrow\"", "\"in the morning\" or \"3 pm\""),
-            };
+            let texts = &vocabulary().machines.form_context_extractor;
+            let examples = texts.examples.in_language(language);
+            let said_as = [
+                ("language", examples.language.as_str()),
+                ("day", examples.day.as_str()),
+                ("time", examples.time.as_str()),
+            ];
 
             Self {
-                role: "You are a context extractor machine. The caller is filling in the form in <form_state>. You receive a <utterance> on the input and provide the form values it gives in a predefined <json_output_format> as output.".into(),
-                rules: vec![
-                    "Each key of <json_output_format> is a field of <form_state>. Set it to the value <utterance> gives for that field, or to null when <utterance> gives none. One utterance can give values for several fields".into(),
-                    "A value the caller gives without saying what it is for is for the `current_field` of <form_state>, also when it comes with a denial or changes the value that field has".into(),
-                    format!("For a field of kind `date` write YYYY-MM-DD. For a field of kind `spoken_date` write the caller's words for the day in {said_in} and lowercase, such as {day}, without working the date out. For a field of kind `spoken_time` write the caller's words for the time of day the same way, such as {time_of_day}. Write numbers as digits, yes and no as true and false, and text as the caller said it"),
-                    "Extract the values only from what <utterance> itself says. Never copy a value that is already in <form_state> or in <conversation_history>.".into(),
-                    "One exception is a value the caller points to instead of saying it, such as \"the same as before\": write the value they point to.".into(),
-                    "The other is a value the caller changes only a part of: write the whole value with that part changed and the rest as it is in <form_state>. When <form_state> has 2001-04-09 and the caller says \"no, the tenth\" or \"yes, but in 2002\", write 2001-04-10 or 2002-04-09. When it has Maria Rossi and the caller says \"no, the last name is Russo\", write Maria Russo.".into(),
-                    "Each value must only be set once, in one key of <json_output_format>.".into(),
-                    "If <utterance> gives no form value, such as a plain agreement or denial, a question or a request, set every key to null.".into(),
-                ],
+                role: texts.role.clone(),
+                rules: texts.rules.iter().map(|rule| fill_in(rule, &said_as)).collect(),
             }
         }
 
         pub fn form_intent_matcher() -> Self {
-            Self {
-                role: "You are the intent matcher. The caller is filling in the form in <form_state>. Classify what the caller wants with their latest <utterance>.".into(),
-                rules: [
-                    "Classify only the latest <utterance>. Use <conversation_history> to understand short or \
-                    elliptical answers such as \"yes\", \"the second one\" or a bare name",
-                    "Look at the state of the `current_field` of <form_state> first: when it is `queued` the caller \
-                    was asked for its value, when it is `awaiting_confirmation` the caller was asked whether its \
-                    value is right",
-                    "Use `confirm_yes` only for a clear agreement. A word that neither agrees, denies nor gives a \
-                    value is `unsupported`",
-                    "A request that is not about this form, such as the weather, an exchange rate, a question about \
-                    the calendar or another booking, is `unsupported`",
-                ]
-                    .map(String::from)
-                    .to_vec(),
-            }
+            Self::from(&vocabulary().machines.form_intent_matcher)
         }
 
-        pub fn form_response_formulator() -> Self {
+        /// Only asked about an utterance the matcher took for an agreement, and shown that utterance
+        /// alone (`query_utterance_alone`): a question is never an agreement.
+        pub fn form_agreement_checker() -> Self {
+            Self::from(&vocabulary().machines.form_agreement_checker)
+        }
+
+        /// Only asked when the caller has a question about the form: every other reply of a form
+        /// is code's. `language` is the one it answers in, named in its rules.
+        pub fn form_response_formulator(language: Language) -> Self {
+            let texts = &vocabulary().machines.form_response_formulator;
+            let language = language.to_string();
+
             Self {
-                role: "You are the voice of a phone assistant that is filling in a form with the caller. Reply to \
-                the caller's <utterance> from what <context> gives you, as natural speech."
-                    .to_string(),
-                rules: [
-                    "Reply in the language given by <language> in <context>",
-                    "Only ask one question in reply",
-                    "No markdown, lists, special characters or emojis: the reply is read out by a speech synthesizer",
-                    "Follow <response_context> instructions when answering and take its content into consideration",
-                    "When <next_step> is set in <context>, end the reply with that step and ask nothing \
-                    else. To have a value confirmed, say what the value is for, read it back and ask plainly \
-                    whether it is right",
-                    "When introducing an abbreviation or acronym, expand it to its full form on first mention (e.g., 'API (Application Programming Interface)'). For common everyday terms like ID, HTML, or USB, keep them as abbreviations.",
-                    "Say forms, fields and values in plain words, never as their snake_case names or states",
-                    "Answer a question about the form only from the fields of <form_state>: a field without a value \
-                    has not been given yet, and a field that is not `completed` has not been confirmed yet",
-                    "The form is only sent once every field is confirmed, so never say it is booked or done before \
-                    <response_context> says it is complete",
-                ]
-                    .map(String::from)
-                    .to_vec()
+                role: texts.role.clone(),
+                rules: texts.rules.iter().map(|rule| fill_in(rule, &[("language", &language)])).collect(),
             }
         }
     }
 
-    /// Returns the form once the caller has confirmed its last field: the call is back in the main menu then.
+    /// What a turn of a form comes to.
+    pub struct FormTurn {
+        pub reply: Reply,
+        // The form, once the caller has confirmed its last field: the call is back in the main menu then
+        pub completed: Option<Form>,
+    }
+
+    impl FormTurn {
+        fn said(reply: impl Into<String>) -> Self {
+            Self {
+                reply: Reply::Said(reply.into()),
+                completed: None,
+            }
+        }
+    }
+
+    /// Changes the form by what the caller wants, and words the reply: what the turn has to say first,
+    /// then the question of the step the form is on. Only a question about the form is left to the
+    /// formulator.
     pub async fn form_intent_context_handler(
         intent: &ExtractedFormIntent,
         form_values: &ExtractedFormValues,
@@ -629,18 +680,17 @@ pub mod form_flow {
         session: &mut CallSession,
         http_client: &Client,
         app_state: &AppState,
-    ) -> Option<Form> {
+    ) -> FormTurn {
         let caller_intent = CallerIntent::from_label(intent.caller_intent())
             .unwrap_or(CallerIntent::Unsupported);
 
         session.call_turn_outcome = CallTurnOutcome::matched(caller_intent, intent.machine_reasoning(), intent.confidence());
 
-        let CallState::FormInProgress(form) = &mut session.data.state else {
-            return None;
-        };
+        let language = session.data.language;
 
-        // The form as the turn found it
-        let before = form.clone();
+        let CallState::FormInProgress(form) = &mut session.data.state else {
+            return FormTurn { reply: Reply::Formulated { then: None }, completed: None };
+        };
 
         let given = given_values(form, form_values);
         // What of it is for the field the caller is on
@@ -650,19 +700,29 @@ pub mod form_flow {
             .cloned()
             .collect();
 
-        let backend_context = match caller_intent {
-            CallerIntent::GetInformation { selected } => match selected.fetch(&http_client).await {
-                Ok(information) => information,
-                Err(e) => {
-                    error!(call_id = %session.call_id, "Could not fetch {selected}: {e:#}");
+        // What the caller hears before the question of the step
+        let said_first = match caller_intent {
+            // The formulator answers the caller's question, and the step's question is asked after it.
+            CallerIntent::GetInformation { selected } => {
+                let instruction = match selected.fetch(&http_client).await {
+                    Ok(information) => information,
+                    Err(e) => {
+                        error!(call_id = %session.call_id, "Could not fetch {selected}: {e:#}");
 
-                    "Politely apologize, state that the requested service is unavailable at the moment.".into()
-                }
-            },
+                        vocabulary().instructions.service_unavailable.clone()
+                    }
+                };
+                session.call_turn_context.insert("response_context".into(), instruction);
+
+                return FormTurn {
+                    reply: Reply::Formulated { then: Some(next_step(form, language)) },
+                    completed: None,
+                };
+            }
             // A correction that comes without a value is only the denial.
-            CallerIntent::CorrectFormFieldValue if given.is_empty() => reject(form),
+            CallerIntent::CorrectFormFieldValue if given.is_empty() => reject(form, language),
             // A correction never accepts the value that was read back, whichever fields it is for.
-            CallerIntent::CorrectFormFieldValue => validate_and_fill(app_state, form, &given, false).await,
+            CallerIntent::CorrectFormFieldValue => validate_and_fill(app_state, form, &given, false, language).await,
             // An answer fills what the caller has not confirmed yet: a confirmed value takes a correction.
             CallerIntent::ProvideFormFieldValue | CallerIntent::ReferToContextForFormFieldValue => {
                 let unconfirmed: Vec<_> = given
@@ -671,99 +731,74 @@ pub mod form_flow {
                     .cloned()
                     .collect();
 
-                validate_and_fill(app_state, form, &unconfirmed, true).await
+                validate_and_fill(app_state, form, &unconfirmed, true, language).await
             }
             // "Yes, but it is 1992": an agreement that comes with another value does not confirm the one read
             // back. Only that value is taken: on an agreement the extractor's other values are not the caller's.
             CallerIntent::ConfirmYes if replaces_read_back(form, &for_current, utterance) => {
-                validate_and_fill(app_state, form, &for_current, false).await
+                validate_and_fill(app_state, form, &for_current, false, language).await
             }
-            CallerIntent::ConfirmYes => confirm(form),
-            CallerIntent::ConfirmNo => reject(form),
+            CallerIntent::ConfirmYes => confirm(form, language),
+            CallerIntent::ConfirmNo => reject(form, language),
             CallerIntent::CancelForm => {
-                let cancelled = format!(
-                    "The {} form was cancelled, nothing of it was kept. Say so and ask whether the caller needs \
-                    anything else.",
-                    form.kind
-                );
+                let cancelled = form.kind.vocabulary().cancelled.say(language);
                 session.data.state = CallState::Idle;
 
-                cancelled
+                return FormTurn::said(cancelled);
             }
-            CallerIntent::Repeat => format!(
-                "The caller asked to hear your last reply again. Say it once more: {}",
-                session.data.last_spoken_response.as_deref().unwrap_or_default()
-            ),
+            // The last reply once more: it ends with the step's question already.
+            CallerIntent::Repeat => {
+                let again = session.data.last_spoken_response.clone();
+
+                return FormTurn::said(again.unwrap_or_else(|| next_step(form, language)));
+            }
             CallerIntent::EndCall => {
                 session.data.state = CallState::Idle;
                 session.call_turn_outcome.action = CallAction::EndCall;
 
-                "The caller is ending the call. Say a short, friendly goodbye and ask nothing.".to_string()
+                return FormTurn::said(Phrase::Goodbye.say(language));
             }
+            // The form is kept, and after a transfer the assistant asks nothing.
             CallerIntent::TransferToHuman => {
                 session.call_turn_outcome.action = CallAction::TransferToHuman;
 
-                "Tell the caller you are transferring them to a human agent now, and ask nothing.".to_string()
+                return FormTurn::said(Phrase::Transfer.say(language));
             }
             // CallerIntent::Unsupported
-            _ => "The caller said something you cannot help with while the form is being filled in, or that \
-                does not answer your question. Do not answer it, only say politely in a few words that you \
-                cannot help with that."
-                .to_string(),
+            _ => vec![Phrase::CannotHelpInForm.say(language)],
         };
 
-        // A repeated reply already ends with the step, and after a transfer the assistant asks nothing.
-        let asks_next_step = !matches!(caller_intent, CallerIntent::Repeat | CallerIntent::TransferToHuman);
-
-        let completed_form = match &session.data.state {
-            CallState::FormInProgress(form) if form.is_filled() => Some(form.clone()),
-            CallState::FormInProgress(form) if asks_next_step => {
-
-                session.call_turn_context.insert("next_step".into(), next_step(form));
-
-                None
-            }
-            _ => None,
-        };
-
-        if completed_form.is_some() {
+        // The caller confirmed the last field: the form's own closing sentence is all they hear.
+        if form.is_filled() {
+            let completed = form.clone();
             session.data.state = CallState::Idle;
+
+            return FormTurn {
+                reply: Reply::Said(completed.kind.vocabulary().completed.say(language).to_string()),
+                completed: Some(completed),
+            };
         }
 
-        // The formulator is not shown the form on a turn that put a value into it. With the new value in the
-        // form in front of it, it takes that value for settled and asks for the next empty field, or reads
-        // back every value the form holds. On any other turn the form says what is settled: without it the
-        // reply asks once more whether the value the caller just confirmed is right.
-        session.shows_form_state =
-            !matches!(&session.data.state, CallState::FormInProgress(form) if form.holds_new_value(&before));
+        let step = next_step(form, language);
+        let mut reply: Vec<&str> = said_first;
+        reply.push(&step);
 
-        session.call_turn_context.insert(
-            "response_context".into(),
-            backend_context
-        );
-
-        completed_form
+        FormTurn::said(sentences(&reply))
     }
 
-    /// What the caller hears when the turn failed on our side while a form is being filled in.
-    /// Fixed text like in the main menu. The form is as it was, so they only have to say it again.
-    pub fn failed_turn_response(language: Language) -> &'static str {
-        match language {
-            Language::German => "Entschuldigung, bei uns ist ein Fehler aufgetreten, bitte wiederholen Sie das \
-                noch einmal.",
-            Language::Russian => "Извините, на нашей стороне произошла ошибка, пожалуйста, повторите ещё раз.",
-            Language::Ukrainian => "Вибачте, на нашому боці сталася помилка, будь ласка, повторіть ще раз.",
-            _ => "Sorry, an error happened on our side, please say that again.",
-        }
-    }
+    /// The question of the step the caller is on, as they hear it: for the field's value, or whether
+    /// the value it has is right. Always about the current field, the first one that is not confirmed.
+    pub fn next_step(form: &Form, language: Language) -> String {
+        let Some(field) = form.current_field() else {
+            return String::new();
+        };
+        let texts = form.kind.vocabulary().field(&field.name);
 
-    pub fn next_step(form: &Form) -> String {
-        match form.current_field() {
-            Some(FormField { description, value: Some(value), state: StepState::AwaitingConfirmation, .. }) => {
-                format!("Next, ask the caller to confirm that {description} is {value}.")
+        match field {
+            FormField { value: Some(value), state: StepState::AwaitingConfirmation, .. } => {
+                fill_in(texts.confirm.say(language), &[("value", &value.spoken(language))])
             }
-            Some(field) => format!("Next, ask the caller for: {}.", field.description),
-            None => String::new(),
+            _ => texts.ask.say(language).to_string(),
         }
     }
 
@@ -832,7 +867,8 @@ pub mod form_flow {
         form: &mut Form,
         given: &[(String, String)],
         moves_on: bool,
-    ) -> String {
+        language: Language,
+    ) -> Vec<&'static str> {
         let mut refused = Vec::new();
 
         for (name, text) in given {
@@ -842,28 +878,32 @@ pub mod form_flow {
             });
         }
 
-        fill(form, given, moves_on, refused)
+        fill(form, given, moves_on, refused, language)
     }
 
     /// Fills every field the caller gave a value for, each then waiting for their confirmation. `moves_on`
     /// says whether values for later fields accept the one read back for the current field. `refused` is
     /// what the validators of each value's field have against it, in the order of `given`.
+    ///
+    /// Returns what the caller is told before the step's question, each sentence once: why a value was
+    /// not taken. A recorded value needs no word: the step's question reads it back.
     fn fill(
         form: &mut Form,
         given: &[(String, String)],
         moves_on: bool,
         refused: Vec<Option<ValidationError>>,
-    ) -> String {
+        language: Language,
+    ) -> Vec<&'static str> {
         let Some(current) = form.current_field() else {
-            return "The form has no field left to fill.".to_string();
+            return vec![];
         };
         let (current, was_read_back) = (current.name.clone(), current.state == StepState::AwaitingConfirmation);
 
         if given.is_empty() {
-            return format!("The caller gave no value for {current}.");
+            return vec![Phrase::NotUnderstood.say(language)];
         }
 
-        let mut context = Vec::new();
+        let mut said = Vec::new();
         let mut read = Vec::new();
 
         for ((name, text), refused) in given.iter().zip(refused) {
@@ -875,21 +915,18 @@ pub mod form_flow {
             match (refused, kind.parse(text)) {
                 // A refused value is not recorded. In place of the one that was read back it still says
                 // that one is wrong, like a value that cannot be read.
-                (Some(ValidationError(reason)), _) => {
+                (Some(error), _) => {
                     if *name == current {
                         form.reject_current();
                     }
 
-                    context.push(format!("\"{text}\" was not recorded for {name}. {reason}"));
+                    said.push(error.say(language));
                 }
-                (None, Some(parsed)) => {
-                    read.push((name, parsed));
-                    context.push(format!("Recorded \"{text}\" for {name}."));
-                }
+                (None, Some(parsed)) => read.push((name, parsed)),
                 // Another value in place of the one that was read back says that one is wrong, even when
                 // the new one cannot be read. Keeping it would only have the same answer come again.
-                (None, None) if *name == current && was_read_back => context.push(reject(form)),
-                (None, None) => context.push(format!("Could not understand \"{text}\" as a {kind:?} value for {name}.")),
+                (None, None) if *name == current && was_read_back => said.extend(reject(form, language)),
+                (None, None) => said.push(Phrase::NotUnderstood.say(language)),
             }
         }
 
@@ -904,12 +941,20 @@ pub mod form_flow {
             form.fill_field(name, parsed);
         }
 
-        context.join(" ")
+        let mut once = Vec::new();
+        for sentence in said {
+            if !once.contains(&sentence) {
+                once.push(sentence);
+            }
+        }
+
+        once
     }
 
-    fn confirm(form: &mut Form) -> String {
+    /// The caller agreed. Returns what they are told before the step's question.
+    fn confirm(form: &mut Form, language: Language) -> Vec<&'static str> {
         let Some(field) = form.current_field() else {
-            return "The form has nothing to confirm.".to_string();
+            return vec![];
         };
         let (name, kind, state) = (field.name.clone(), field.kind, field.state);
 
@@ -917,26 +962,19 @@ pub mod form_flow {
             (StepState::AwaitingConfirmation, _) => {
                 form.confirm_current();
 
-                if form.is_filled() {
-                    format!(
-                        "The caller confirmed {name}. The {} form is complete with {}. Tell the caller it is done \
-                        and ask whether they need anything else.",
-                        form.kind,
-                        form.values_summary()
-                    )
-                } else {
-                    format!("The caller confirmed {name}. Thank them.")
-                }
+                vec![Phrase::Thanks.say(language)]
             }
             // A yes to a yes-or-no field is its value, not a confirmation. Validators are not asked about it.
-            (StepState::Queued, FormFieldKind::Bool) => fill(form, &[(name, "true".to_string())], false, vec![None]),
-            _ => format!("The caller said yes, but {name} has no value to confirm yet."),
+            (StepState::Queued, FormFieldKind::Bool) => fill(form, &[(name, "true".to_string())], false, vec![None], language),
+            // A yes with nothing to confirm: the step's question is all there is to say.
+            _ => vec![],
         }
     }
 
-    fn reject(form: &mut Form) -> String {
+    /// The caller denied. Returns what they are told before the step's question.
+    fn reject(form: &mut Form, language: Language) -> Vec<&'static str> {
         let Some(field) = form.current_field() else {
-            return "The form has nothing to reject.".to_string();
+            return vec![];
         };
         let (name, kind, state) = (field.name.clone(), field.kind, field.state);
 
@@ -946,16 +984,14 @@ pub mod form_flow {
 
                 let failures = form.current_field().map_or(0, |field| field.confirmation_failed_counter);
                 if failures >= MAX_CONFIRMATION_FAILURES {
-                    format!(
-                        "The caller rejected the value for {name} {failures} times. Apologize and offer to transfer \
-                        them to a human agent."
-                    )
+                    vec![Phrase::OfferHuman.say(language)]
                 } else {
-                    format!("The caller said the value for {name} is wrong, so it was dropped. Apologize for the mistake.")
+                    vec![Phrase::Sorry.say(language)]
                 }
             }
-            (StepState::Queued, FormFieldKind::Bool) => fill(form, &[(name, "false".to_string())], false, vec![None]),
-            _ => format!("The caller said no, but {name} has no value to reject."),
+            (StepState::Queued, FormFieldKind::Bool) => fill(form, &[(name, "false".to_string())], false, vec![None], language),
+            // A no with nothing to reject: the step's question is all there is to say.
+            _ => vec![],
         }
     }
 
@@ -964,13 +1000,15 @@ pub mod form_flow {
         use super::*;
         use crate::domain::call::FormSupported;
 
+        const LANGUAGE: Language = Language::English;
+
         fn given(values: &[(&str, &str)]) -> Vec<(String, String)> {
             values.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect()
         }
 
         /// `fill` with no validator against any of the values.
-        fn fill_all(form: &mut Form, values: &[(&str, &str)], moves_on: bool) -> String {
-            fill(form, &given(values), moves_on, values.iter().map(|_| None).collect())
+        fn fill_all(form: &mut Form, values: &[(&str, &str)], moves_on: bool) -> Vec<&'static str> {
+            fill(form, &given(values), moves_on, values.iter().map(|_| None).collect(), LANGUAGE)
         }
 
         /// The doctor form with the name confirmed and the date of birth read back to the caller.
@@ -987,30 +1025,38 @@ pub mod form_flow {
             form.find_field(name).unwrap().state
         }
 
+        /// The question that asks for the field, and the one that reads `value` back for it, as the
+        /// vocabulary words them.
+        fn asks_for(form: &Form, name: &str) -> String {
+            form.kind.vocabulary().field(name).ask.say(LANGUAGE).to_string()
+        }
+
+        fn reads_back(form: &Form, name: &str, value: &str) -> String {
+            fill_in(form.kind.vocabulary().field(name).confirm.say(LANGUAGE), &[("value", value)])
+        }
+
         #[test]
         fn one_utterance_fills_several_fields_and_each_waits_for_its_confirmation() {
             let mut form = FormSupported::DoctorAppointment.build();
-            let context = fill_all(
+            let said_first = fill_all(
                 &mut form,
                 &[("patient_name", "John Smith"), ("reason", "headache"), ("appointment_time", "at noon")],
                 true,
             );
 
-            assert_eq!(
-                context,
-                "Recorded \"John Smith\" for patient_name. Recorded \"headache\" for reason. \
-                Recorded \"at noon\" for appointment_time."
-            );
-            assert_eq!(next_step(&form), "Next, ask the caller to confirm that Full name of the patient is John Smith.");
+            // Recorded values need no word: the first of them is read back
+            assert!(said_first.is_empty());
+            assert_eq!(next_step(&form, LANGUAGE), reads_back(&form, "patient_name", "John Smith"));
 
             // The fields in between are still asked for, the filled ones only have to be confirmed
             form.confirm_current();
-            assert_eq!(next_step(&form), "Next, ask the caller for: Patient's date of birth.");
+            assert_eq!(next_step(&form, LANGUAGE), asks_for(&form, "date_of_birth"));
             fill_all(&mut form, &[("date_of_birth", "1991-06-13")], true);
+            assert_eq!(next_step(&form, LANGUAGE), reads_back(&form, "date_of_birth", "June 13, 1991"));
             form.confirm_current();
-            assert_eq!(next_step(&form), "Next, ask the caller to confirm that Reason for the visit is headache.");
+            assert_eq!(next_step(&form, LANGUAGE), reads_back(&form, "reason", "headache"));
             form.confirm_current();
-            assert_eq!(next_step(&form), "Next, ask the caller for: Date of the appointment.");
+            assert_eq!(next_step(&form, LANGUAGE), asks_for(&form, "appointment_date"));
             assert_eq!(state(&form, "appointment_time"), StepState::AwaitingConfirmation);
         }
 
@@ -1052,23 +1098,27 @@ pub mod form_flow {
         #[test]
         fn unreadable_value_in_place_of_the_one_read_back_drops_it() {
             let mut form = form();
-            fill_all(&mut form, &[("date_of_birth", "1992")], false);
+            let said_first = fill_all(&mut form, &[("date_of_birth", "1992")], false);
 
             let field = form.find_field("date_of_birth").unwrap();
             assert_eq!(
                 (field.state, &field.value, field.confirmation_failed_counter),
                 (StepState::Queued, &None, 1)
             );
+            // The caller hears the apology of a denial, and is asked for the date again
+            assert_eq!(said_first, vec![Phrase::Sorry.say(LANGUAGE)]);
+            assert_eq!(next_step(&form, LANGUAGE), asks_for(&form, "date_of_birth"));
         }
 
         #[test]
         fn refused_value_is_not_recorded_and_drops_the_one_read_back() {
-            let refused = || vec![Some(ValidationError("Tell the caller why.".into()))];
+            let refused = || vec![Some(ValidationError::DateOfBirthInTheFuture)];
             let field = |form: &Form, name: &str| form.find_field(name).unwrap().clone();
 
             let mut replaced = form();
-            let context = fill(&mut replaced, &given(&[("date_of_birth", "2091-06-13")]), false, refused());
-            assert_eq!(context, "\"2091-06-13\" was not recorded for date_of_birth. Tell the caller why.");
+            let said_first = fill(&mut replaced, &given(&[("date_of_birth", "2091-06-13")]), false, refused(), LANGUAGE);
+            // The caller hears the validator's own sentence
+            assert_eq!(said_first, vec![ValidationError::DateOfBirthInTheFuture.say(LANGUAGE)]);
             assert_eq!(
                 (field(&replaced, "date_of_birth").state, field(&replaced, "date_of_birth").value),
                 (StepState::Queued, None)
@@ -1076,7 +1126,7 @@ pub mod form_flow {
 
             // For a later field it neither accepts the value read back nor drops it
             let mut moved_on = form();
-            fill(&mut moved_on, &given(&[("reason", "headache")]), true, refused());
+            fill(&mut moved_on, &given(&[("reason", "headache")]), true, refused(), LANGUAGE);
             assert_eq!(field(&moved_on, "date_of_birth").state, StepState::AwaitingConfirmation);
             assert_eq!(field(&moved_on, "reason").value, None);
         }
@@ -1099,6 +1149,75 @@ pub mod form_flow {
             fill_all(&mut replaced, &[("date_of_birth", "1992-06-13"), ("reason", "headache")], true);
             assert_eq!(state(&replaced, "date_of_birth"), StepState::AwaitingConfirmation);
             assert_eq!(state(&replaced, "reason"), StepState::AwaitingConfirmation);
+        }
+
+        #[test]
+        fn yes_and_no_are_answered_with_a_sentence_of_the_vocabulary() {
+            let mut form = form();
+            assert_eq!(confirm(&mut form, LANGUAGE), vec![Phrase::Thanks.say(LANGUAGE)]);
+            // Nothing waits for a yes or a no now: the step's question is all there is to say
+            assert!(confirm(&mut form, LANGUAGE).is_empty());
+            assert!(reject(&mut form, LANGUAGE).is_empty());
+
+            // The third no to one field offers a human
+            for said_first in [Phrase::Sorry, Phrase::Sorry, Phrase::OfferHuman] {
+                fill_all(&mut form, &[("reason", "headache")], true);
+                assert_eq!(reject(&mut form, LANGUAGE), vec![said_first.say(LANGUAGE)]);
+            }
+        }
+
+        #[test]
+        fn value_that_cannot_be_read_is_said_not_to_be_understood() {
+            let mut form = FormSupported::DoctorAppointment.build();
+            // Not a date. The reason said with it is recorded all the same
+            let said_first = fill_all(&mut form, &[("date_of_birth", "in June"), ("reason", "headache")], true);
+            assert_eq!(said_first, vec![Phrase::NotUnderstood.say(LANGUAGE)]);
+            assert_eq!(state(&form, "date_of_birth"), StepState::Queued);
+            assert_eq!(state(&form, "reason"), StepState::AwaitingConfirmation);
+
+            // An answer that gave no value at all
+            assert_eq!(fill_all(&mut form, &[], true), vec![Phrase::NotUnderstood.say(LANGUAGE)]);
+        }
+
+        #[test]
+        fn agreement_that_was_a_question_is_a_question_about_the_form() {
+            let matched = |intent: &str| -> ExtractedFormIntent {
+                serde_json::from_value(json!({ "machine_reasoning": "The caller asks whether it is confirmed.", "caller_intent": intent })).unwrap()
+            };
+
+            // Only what the matcher took for an agreement is checked
+            assert!(matched("confirm_yes").is_agreement());
+            assert!(!matched("confirm_no").is_agreement());
+            assert!(!matched("get_information[form_information]").is_agreement());
+
+            let question = matched("confirm_yes").as_question();
+            assert_eq!(
+                CallerIntent::from_label(question.caller_intent()),
+                Some(CallerIntent::GetInformation { selected: GetInformationSupported::FormInformation })
+            );
+            assert!(!question.is_agreement());
+            // What the matcher wrote stays, but for how sure it was of the agreement
+            assert_eq!(question.machine_reasoning(), "The caller asks whether it is confirmed.");
+            assert_eq!(question.confidence(), None);
+
+            // The checker's answer is true or false and nothing else
+            let checked = |answer: &str| serde_json::from_str::<CheckedAgreement>(answer).map(|checked| checked.is_question());
+            assert_eq!(checked(r#"{"is_question": true}"#).ok(), Some(true));
+            assert_eq!(checked(r#"{"is_question": false}"#).ok(), Some(false));
+            assert!(checked(r#"{"is_question": "yes"}"#).is_err());
+        }
+
+        #[test]
+        fn answer_to_a_question_about_the_form_is_its_first_sentence() {
+            assert_eq!(first_sentence("Ich habe Hans Müller notiert. Ist das korrekt?"), "Ich habe Hans Müller notiert.");
+            assert_eq!(first_sentence("Noch nicht, wir buchen den Termin gleich."), "Noch nicht, wir buchen den Termin gleich.");
+            // The number of a day and a title do not end a sentence
+            assert_eq!(
+                first_sentence("Das Geburtsdatum ist der 13. Juni 1991. Stimmt das?"),
+                "Das Geburtsdatum ist der 13. Juni 1991."
+            );
+            assert_eq!(first_sentence("Ich habe Dr. Müller notiert. Und nun?"), "Ich habe Dr. Müller notiert.");
+            assert_eq!(first_sentence("Hans Müller"), "Hans Müller");
         }
     }
 }

@@ -12,7 +12,9 @@
 """
 import os
 import re
+import tomllib
 import unicodedata
+from pathlib import Path
 
 from deepeval.metrics import (
     BaseConversationalMetric,
@@ -186,7 +188,7 @@ REPLY_DETECTOR = LanguageDetectorBuilder.from_languages(
 ).build()
 
 
-@check("Reply Language", "response formulator")
+@check("Reply Language", "reply")
 def reply_language(expect, turn, reply):
     detected = REPLY_DETECTOR.detect_language_of(reply)
     code = detected.iso_code_639_1.name.lower() if detected else None
@@ -199,7 +201,7 @@ ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿]")
 
 
-@check("Reply Speakable", "response formulator")
+@check("Reply Speakable", "reply")
 def reply_speakable(expect, turn, reply):
     """The reply is read out by a speech synthesizer: plain words in the caller's script, nothing else."""
     problems = []
@@ -223,7 +225,7 @@ def said(options, reply):
     return any(option.lower() in reply.lower() for option in options)
 
 
-@check("Reply Says", "response formulator")
+@check("Reply Says", "reply")
 def reply_says(expect, turn, reply):
     """`says` lists what the reply has to mention, each as the wordings that count; `never_says` what it must not."""
     if "says" not in expect and "never_says" not in expect:
@@ -305,7 +307,7 @@ def expected_step(expect, turn):
     return ("confirm" if field["state"] == "awaiting_confirmation" else "ask"), field
 
 
-@check("Reply Asks", "response formulator")
+@check("Reply Asks", "reply")
 def reply_asks(expect, turn, reply):
     """One question at most, and it is the next step: the field the form is on, or the confirmation of
     the value it holds. Told by the words of the question, so a pass is likely and not certain."""
@@ -336,21 +338,24 @@ def reply_asks(expect, turn, reply):
 
 BOOKING = re.compile(r"\b(termin|appointment|buchung|booking)", re.IGNORECASE)
 CLAIMED = re.compile(
-    r"\b(gebucht|eingetragen|festgelegt|ist vereinbart|wurde vereinbart|booked|is scheduled|has been scheduled|is confirmed|is set)\b",
+    r"\b(gebucht|bestätigt|eingetragen|festgelegt|ist vereinbart|wurde vereinbart|booked|is scheduled|has been scheduled|is confirmed|is set)\b",
     re.IGNORECASE,
 )
 NEGATED = re.compile(r"\b(nicht|kein|keinen|not|never)\b|n't", re.IGNORECASE)
+# What will be once the form is done is no claim that it is: "Der Termin wird bestätigt, sobald alle Angaben da sind"
+LATER = re.compile(r"\b(sobald|erst|bevor|wird|werden|once|will|before|until)\b", re.IGNORECASE)
 
 
-@check("No Early Booking", "response formulator")
+@check("No Early Booking", "reply")
 def no_early_booking(expect, turn, reply):
-    """While the form is still open, the reply must not say the appointment is booked."""
+    """While the form is still open, the reply must not say the appointment is booked or confirmed."""
     if not turn.get("form"):
         return None
 
     claims = [
         sentence for sentence in SENTENCE_END.split(reply)
-        if BOOKING.search(sentence) and CLAIMED.search(sentence) and not NEGATED.search(sentence)
+        if BOOKING.search(sentence) and CLAIMED.search(sentence)
+        and not NEGATED.search(sentence) and not LATER.search(sentence)
     ]
 
     return not claims, f"says it is booked while the form is still open: \"{claims[0]}\"" if claims else "does not say it is booked"
@@ -443,9 +448,38 @@ def sentences_of(reply):
     return {normalized(sentence) for sentence in SENTENCE_END.split(reply) if len(sentence.split()) >= 4}
 
 
+def localized(texts):
+    """Every text of the vocabulary that is said to the caller: the ones with a wording per language."""
+    if isinstance(texts, dict):
+        if set(texts) == {"de", "en", "ru", "uk"}:
+            yield from (text for text in texts.values() if isinstance(text, str))
+        else:
+            for value in texts.values():
+                yield from localized(value)
+
+
+VOCABULARY = tomllib.loads(
+    (Path(__file__).resolve().parent.parent / "app" / "config" / "llm_vocabulary.toml").read_text(encoding="utf-8")
+)
+# The sentences code says as they are, with whatever fills a {placeholder}. Of four words or more, like
+# the ones `sentences_of` looks at: a date's format is placeholders only and would fit any sentence
+CODE_SENTENCES = [
+    re.compile(re.sub(r"\\\{\w+\\\}", ".+", re.escape(normalized(sentence))))
+    for text in localized(VOCABULARY)
+    for sentence in SENTENCE_END.split(text)
+    if len(sentence.split()) >= 4
+]
+
+
+def said_by_code(sentence):
+    return any(pattern.fullmatch(sentence) for pattern in CODE_SENTENCES)
+
+
 class RepeatedSentences(BaseConversationalMetric):
     """A reply that says a whole sentence of the reply before it again, when the caller did not ask for
-    it, is the formulator copying its own history instead of following the turn's instruction."""
+    it, is the formulator copying its own history instead of following the turn's instruction. A
+    sentence of the vocabulary does not count: code asks a step's question again after a no, an
+    outside request or a question about the form."""
 
     def __init__(self):
         self.threshold = 1.0
@@ -458,6 +492,7 @@ class RepeatedSentences(BaseConversationalMetric):
             if now.get("selected_function") == "repeat":
                 continue
             again = sentences_of(before.get("answer") or "") & sentences_of(now.get("answer") or "")
+            again = {sentence for sentence in again if not said_by_code(sentence)}
             if again:
                 repeated.append(f"turn {number + 1} says again: \"{sorted(again)[0]}\"")
 
@@ -478,7 +513,7 @@ class RepeatedSentences(BaseConversationalMetric):
         return "Repeated Sentences"
 
 
-STAGES["Repeated Sentences"] = "response formulator"
+STAGES["Repeated Sentences"] = "reply"
 
 
 class Facts(BaseMetric):
@@ -525,7 +560,7 @@ def conversation_metrics(turns):
 #  LLM-judged metrics, for the part of a reply that words alone cannot tell
 # --------------------------------------------------------------------------------------------------
 
-JUDGED_STAGE = "response formulator (judged)"
+JUDGED_STAGE = "reply (judged)"
 STAGES.update({
     "Follows Instruction [GEval]": JUDGED_STAGE,
     "Faithfulness": JUDGED_STAGE,
