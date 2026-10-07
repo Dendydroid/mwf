@@ -269,7 +269,7 @@ field marked) and `last_filled_out_form`. Newest line on top.
 | `run-local-stt.sh` | Downloads the speech models named in `settings.toml`, starts `--local-stt-mode` |
 | `client/index.html` | Mimic client |
 | `evals/` | DeepEval suites, §7 |
-| `docker/vllm/` | vLLM image wrapper. `docker/classifier/` is an abandoned GLiNER2 experiment (machine #1 without an LLM), not in compose, not called |
+| `docker/vllm/` | vLLM image wrapper |
 | `migrations/` | One test table; `sqlx::migrate!` is commented out in `main.rs` |
 
 ### 4.1 Machines and prompts (`machine.rs`)
@@ -627,7 +627,6 @@ the summary, exits 1 if a golden failed. DeepEval's own "pass rate" counts Turn 
     `query_json`, four `AllowedValue` variants, `call_id` fields of two events, unused imports.
 20. Prompt-file remnants: `llm_system_prompt_file` in `settings.toml`/`settings.rs`, `LLM_SYSTEM_PROMPT_FILE` and the
     `./app/prompts` mount in compose, the `COPY` in the `Dockerfile` (see §1 build gotcha).
-21. `docker/classifier/` is unused.
 22. `sqlx::migrate!` is commented out in `main.rs`; `ApiError::Inference` is never produced.
 
 **Speech (local STT mode)**
