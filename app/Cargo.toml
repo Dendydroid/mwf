@@ -3,6 +3,11 @@ name = "app"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# `--local-stt-mode`: the microphone, the loudspeaker, the speech models and the
+# window. Off by default, because the container has no sound card and no screen.
+local-stt = ["dep:sherpa-onnx", "dep:rodio", "dep:eframe"]
+
 [dependencies]
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -28,6 +33,9 @@ reqwest = { workspace = true }
 quick-xml = { workspace = true }
 uuid = { workspace = true }
 lingua = { workspace = true }
+sherpa-onnx = { workspace = true, optional = true }
+rodio = { workspace = true, optional = true }
+eframe = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

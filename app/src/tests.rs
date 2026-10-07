@@ -94,3 +94,59 @@ fn cache_saves_value_and_value_is_removed() {
         "Cache didn't write value properly!"
     );
 }
+
+/// What a voice says, the recognizer hears: text to speech into speech to text, without the
+/// sound card. Needs the speech models, which `./run-local-stt.sh` downloads:
+/// `cargo test -p app --features local-stt -- --ignored speech`
+#[cfg(feature = "local-stt")]
+#[test]
+#[ignore = "needs the speech models"]
+fn speech_survives_the_round_trip() {
+    use crate::domain::call::FormSupported;
+    use crate::stt::transcriber::{Transcriber, WINDOW};
+    use crate::stt::SAMPLE_RATE;
+    use crate::tts::voice::Voice;
+    use lingua::{IsoCode639_1, Language};
+    use sherpa_onnx::LinearResampler;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::str::FromStr;
+
+    // The paths are relative to the project root, and the tests run in app/
+    let from_root = |path: &str| format!("../{path}");
+    let letters = |text: &str| text.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+
+    let mut settings = AppSettings::load();
+    settings.stt_settings.vad_model = from_root(&settings.stt_settings.vad_model);
+    settings.stt_settings.model_dir = from_root(&settings.stt_settings.model_dir);
+
+    let mut transcriber = Transcriber::load(&settings.stt_settings).unwrap();
+    let question = &vocabulary().form(FormSupported::DoctorAppointment).field("date_of_birth").ask;
+
+    for (language, dir) in &settings.tts_settings.voices {
+        let voice = Voice::load(&from_root(dir), settings.tts_settings.num_threads).unwrap();
+        let language = Language::from_iso_code_639_1(&IsoCode639_1::from_str(language).unwrap());
+        let text = question.say(language);
+
+        let said = Rc::new(RefCell::new(Vec::new()));
+        voice
+            .say(text, {
+                let said = Rc::clone(&said);
+                move |sentence| said.borrow_mut().extend_from_slice(sentence)
+            })
+            .unwrap();
+
+        // At the recognizer's sample rate, followed by the silence that ends an utterance
+        let mut sound = LinearResampler::create(voice.sample_rate().get() as i32, SAMPLE_RATE)
+            .unwrap()
+            .resample(&said.borrow(), true);
+        sound.extend(vec![0.0; 2 * SAMPLE_RATE as usize]);
+
+        let heard: Vec<String> = sound.chunks_exact(WINDOW).filter_map(|window| transcriber.hear(window)).collect();
+
+        assert_eq!(letters(&heard.join(" ")), letters(text), "{language}");
+
+        // As between two turns: the next voice starts from nothing
+        transcriber.forget();
+    }
+}

@@ -5,3 +5,6 @@
 # not source. The directory itself is kept by .gitkeep.
 /logs/*
 !/logs/.gitkeep
+
+# Speech models of --local-stt-mode, downloaded by run-local-stt.sh
+/models

@@ -32,3 +32,27 @@ temperature = 0.0
 # the 4096-token context window, which is the way a single turn ends up holding
 # the GPU for minutes.
 max_tokens = 256
+
+# Only --local-stt-mode reads the two sections below. Their paths are relative to
+# the project root, where that mode is run from. ./run-local-stt.sh downloads
+# what they name under models/speech from the sherpa-onnx releases, so another
+# model of the same kind is a changed name here.
+[stt_settings]
+vad_model = "models/speech/silero_vad.onnx"
+model_dir = "models/speech/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+# 4 for both models: 8 was slower on the 8 cores of an i7-9700K.
+num_threads = 4
+# The caller is done after this much silence. Shorter answers sooner and cuts
+# in on a caller who stops to think.
+end_of_utterance_silence_seconds = 0.6
+
+[tts_settings]
+num_threads = 4
+
+# One Piper voice per language the assistant answers in. An answer in a language
+# without one (ru, uk) is not spoken. Both are "medium" and CC0. A "high" voice
+# takes four times as long: thorsten-high needed 0.6-0.8 s to the first sound
+# of a three-second sentence on an i7-9700K, thorsten-medium 0.15 s.
+[tts_settings.voices]
+de = "models/speech/vits-piper-de_DE-thorsten-medium"
+en = "models/speech/vits-piper-en_US-joe-medium"

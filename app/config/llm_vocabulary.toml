@@ -49,6 +49,29 @@ en = "Sorry, I can't help with that right now."
 ru = "К сожалению, сейчас я не могу с этим помочь."
 uk = "На жаль, зараз я не можу з цим допомогти."
 
+# A caller who only says hello in the main menu. What is offered is said after it
+[phrases.hello]
+de = "Guten Tag."
+en = "Hello."
+ru = "Здравствуйте."
+uk = "Вітаю."
+
+# A request the main menu cannot take, such as the weather of another city. What is offered is said
+# after it
+[phrases.cannot_help_in_main_menu]
+de = "Dabei kann ich Ihnen leider nicht helfen."
+en = "Sorry, I can't help with that."
+ru = "К сожалению, с этим я помочь не могу."
+uk = "На жаль, з цим я допомогти не можу."
+
+# What the assistant can help with. {offers} are the `offer` texts of the main menu's intents, one
+# after the other with a comma between them
+[phrases.offers]
+de = "Ich kann Ihnen Folgendes anbieten: {offers}."
+en = "I can help you with the following: {offers}."
+ru = "Я могу помочь со следующим: {offers}."
+uk = "Я можу допомогти з таким: {offers}."
+
 # The caller ends the call while a form is open
 [phrases.goodbye]
 de = "Vielen Dank für Ihren Anruf. Auf Wiederhören."
@@ -222,8 +245,8 @@ uk = "Час прийому: {value}. Усе правильно?"
 #  Intents: `CallerIntent` in app/src/domain/call.rs, each under its label
 #
 #  description  how an intent matcher is told to match it
-#  offer        how it is named when the caller is told what the assistant can help with. An intent
-#               without one is not named there
+#  offer        how it is named when the caller is told what the assistant can help with, in the
+#               form the sentence of [phrases.offers] needs. An intent without one is not named there
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 
 [intents.unsupported]
@@ -237,11 +260,21 @@ description = "A question about the calendar, such as which date next Saturday i
 
 [intents."get_information[get_current_uah_per_eur]"]
 description = "The caller asks for the current exchange rate of the Ukrainian hryvnia to the euro"
-offer = "the euro to hryvnia exchange rate"
+
+[intents."get_information[get_current_uah_per_eur]".offer]
+de = "den Wechselkurs von Euro zu Hrywnja"
+en = "the euro to hryvnia exchange rate"
+ru = "курс евро к гривне"
+uk = "курс євро до гривні"
 
 [intents."get_information[get_current_weather_in_berlin]"]
 description = "The caller asks about the current weather in Berlin"
-offer = "the current weather in Berlin"
+
+[intents."get_information[get_current_weather_in_berlin]".offer]
+de = "das aktuelle Wetter in Berlin"
+en = "the current weather in Berlin"
+ru = "текущая погода в Берлине"
+uk = "поточна погода в Берліні"
 
 [intents."get_information[form_information]"]
 description = "A question about the form or the values the caller gave, such as \"what name did you record\" or \"did you book it\""
@@ -251,7 +284,12 @@ description = "A question about what the caller filled out or booked in this cal
 
 [intents."start_form[doctor_appointment]"]
 description = "The caller either explicitly states that he wants to book a doctor's appointment or describes the symptoms which also most probably means he wants a doctor's appointment"
-offer = "booking a doctor's appointment"
+
+[intents."start_form[doctor_appointment]".offer]
+de = "die Buchung eines Arzttermins"
+en = "booking a doctor's appointment"
+ru = "запись на приём к врачу"
+uk = "запис на прийом до лікаря"
 
 [intents.provide_form_field_value]
 description = "An answer to the `current_field` of <form_state> when it is `queued`, including a plain yes or no when its kind is `bool`"
@@ -413,12 +451,8 @@ only_allowed_values = ". Use only a value listed in <allowed_values><{key}>"
 
 [instructions]
 service_unavailable = "Politely apologize, state that the requested service is unavailable at the moment."
-repeat = "The caller asked to hear your last reply from <conversation_history>."
 end_call = "The caller is ending the call. Say a short, friendly goodbye and ask nothing."
 transfer = "Tell the caller you are transferring them to a human agent now, and ask nothing."
-# {offers} are the `offer` texts of the main menu's intents
-unsupported = "The caller asked for something that is not supported. Politely say so and list, in plain words, what you can help with instead: {offers}."
-greeting = "The caller said hello. Say hello back and list, in plain words, what you can help with: {offers}."
 calendar_help = "The caller asked about dates or the calendar, which you cannot help with. Say you are sorry that you cannot help with dates"
 last_filled_out_form = "The caller asked about the form they filled out last in this call. Summarize it in one or two sentences: the {form} form with {values}."
 no_filled_out_form = "The caller asked about a form they filled out in this call, but none was filled out yet. Say so and summarize nothing."

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use time::Date;
 use crate::domain::call::{flat_enum, CallerIntent, FormSupported};
 use crate::domain::form::ValidationError;
-use crate::settings::is_prompt_loop_mode;
+use crate::settings::is_local_mode;
 
 const FILE: &str = "config/llm_vocabulary.toml";
 
@@ -46,6 +46,12 @@ flat_enum! {
         NotUnderstood,
         // A request the form cannot take
         CannotHelpInForm,
+        // A caller who only says hello is said hello to
+        Hello,
+        // A request the main menu cannot take
+        CannotHelpInMainMenu,
+        // What the assistant can help with, said after either of the two above, with {offers}
+        Offers,
         Goodbye,
         Transfer,
         // A machine failed, so the turn was taken back
@@ -119,6 +125,12 @@ pub struct Dates {
 }
 
 impl Dates {
+    /// January to December as a date names them.
+    #[cfg(feature = "local-stt")]
+    pub fn months(&self, language: Language) -> &[String] {
+        self.months.in_language(language)
+    }
+
     /// A date as it is said, e.g. "13. Juni 1991".
     pub fn spoken(&self, date: Date, language: Language) -> String {
         let month = &self.months.in_language(language)[usize::from(u8::from(date.month())) - 1];
@@ -168,7 +180,7 @@ pub struct IntentVocabulary {
     // How an intent matcher is told to match it
     pub description: String,
     // How it is named when the caller is told what the assistant can help with. Not named without one
-    pub offer: Option<String>,
+    pub offer: Option<Localized>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,13 +248,8 @@ pub struct Prompt {
 #[serde(deny_unknown_fields)]
 pub struct Instructions {
     pub service_unavailable: String,
-    pub repeat: String,
     pub end_call: String,
     pub transfer: String,
-    // With {offers}
-    pub unsupported: String,
-    // With {offers}
-    pub greeting: String,
     pub calendar_help: String,
     // With {form} and {values}
     pub last_filled_out_form: String,
@@ -283,7 +290,7 @@ impl Facts {
 impl Vocabulary {
     fn load() -> Self {
         // Next to settings.toml, and found the same way
-        let prefix = if is_prompt_loop_mode() { "app/" } else { "" };
+        let prefix = if is_local_mode() { "app/" } else { "" };
 
         Config::builder()
             .add_source(config::File::with_name(&format!("{prefix}{FILE}")))
@@ -318,6 +325,9 @@ impl Vocabulary {
             if !self.phrases.contains_key(phrase) {
                 problems.push(format!("no [phrases.{}]", key(phrase)));
             }
+        }
+        if self.phrases.get(&Phrase::Offers).is_some_and(|offers| offers.in_every_language().iter().any(|text| !text.contains("{offers}"))) {
+            problems.push(format!("[phrases.{}] has a text without {{offers}}", key(&Phrase::Offers)));
         }
         for error in ValidationError::ALL {
             if !self.validation.contains_key(error) {

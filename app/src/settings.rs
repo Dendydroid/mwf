@@ -40,6 +40,31 @@ pub struct LlmSettings {
     pub max_tokens: u32,
 }
 
+/// What `--local-stt-mode` hears the caller with. Paths are relative to the working directory,
+/// which is the project root in that mode; `run-local-stt.sh` downloads what they name.
+#[cfg(feature = "local-stt")]
+#[derive(Debug, Deserialize)]
+pub struct SttSettings {
+    /// The Silero model that tells speech from silence.
+    pub vad_model: String,
+    /// Directory of the Parakeet model that writes down what was said.
+    pub model_dir: String,
+    pub num_threads: i32,
+    /// How long the caller has to be silent for the utterance to be over. Shorter answers
+    /// sooner and cuts in on a caller who stops to think.
+    pub end_of_utterance_silence_seconds: f32,
+}
+
+/// What `--local-stt-mode` answers the caller with.
+#[cfg(feature = "local-stt")]
+#[derive(Debug, Deserialize)]
+pub struct TtsSettings {
+    pub num_threads: i32,
+    /// The directory of a Piper voice per language (ISO 639-1). An answer in a language that
+    /// has none is not spoken.
+    pub voices: std::collections::HashMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AppSettings {
     #[serde(rename = "app_env")]
@@ -76,7 +101,8 @@ pub struct AppSettings {
     /// Optional rather than defaulted on purpose: in the container it is
     /// `/var/log/app`, which `docker-compose.yml` mounts to `./logs` on the
     /// host, but a bare `cargo run` on a dev machine has no business creating a
-    /// log directory nobody asked for.
+    /// log directory nobody asked for. The local STT mode is the exception: it
+    /// writes to `LOCAL_STT_LOG_DIR` when this is unset.
     log_dir: Option<String>,
     /// Where completed forms are POSTed (`FORM_SUBMIT_URL`). Unset or empty sends nothing.
     form_submit_url: Option<String>,
@@ -84,12 +110,31 @@ pub struct AppSettings {
     pub database_settings: DatabaseSettings,
     pub llm_settings: LlmSettings,
     pub call_settings: CallSettings,
+    #[cfg(feature = "local-stt")]
+    pub stt_settings: SttSettings,
+    #[cfg(feature = "local-stt")]
+    pub tts_settings: TtsSettings,
 }
 
 const PROMPT_LOOP_FLAG: &str = "--prompt-loop";
+const LOCAL_STT_FLAG: &str = "--local-stt-mode";
+
+// Where the local STT mode writes its log without a `LOG_DIR`: ./logs of the project root it
+// is run from, which the container's log is mounted to as well
+const LOCAL_STT_LOG_DIR: &str = "logs";
 
 pub fn is_prompt_loop_mode() -> bool {
     std::env::args().any(|arg| arg == PROMPT_LOOP_FLAG)
+}
+
+pub fn is_local_stt_mode() -> bool {
+    std::env::args().any(|arg| arg == LOCAL_STT_FLAG)
+}
+
+/// The modes without HTTP. Both are run from the project root: they read `.env.stdin` after
+/// `.env` and find the config under `app/`.
+pub fn is_local_mode() -> bool {
+    is_prompt_loop_mode() || is_local_stt_mode()
 }
 
 impl AppSettings {
@@ -99,11 +144,11 @@ impl AppSettings {
             false => dotenvy::dotenv().expect(".env does not exist"),
         };
 
-        if is_prompt_loop_mode() {
+        if is_local_mode() {
             dotenvy::from_filename_override(".env.stdin").expect(".env.stdin does not exist");
         }
 
-        let prefix_stdin = if is_prompt_loop_mode() { "app/" } else { "" };
+        let prefix_stdin = if is_local_mode() { "app/" } else { "" };
         let settings = Config::builder()
             .add_source(config::File::with_name(&format!("{}config/settings.toml", prefix_stdin)))
             .add_source(Environment::default())
@@ -144,6 +189,7 @@ impl AppSettings {
             .as_deref()
             .map(str::trim)
             .filter(|dir| !dir.is_empty())
+            .or(is_local_stt_mode().then_some(LOCAL_STT_LOG_DIR))
     }
     pub fn form_submit_url(&self) -> Option<&str> {
         self.form_submit_url

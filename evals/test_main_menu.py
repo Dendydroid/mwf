@@ -5,7 +5,7 @@
 import pytest
 
 from assistant import Call
-from suite import ask, check_turn, form_says, golden
+from suite import ask, check_turn, form_says, golden, phrase
 
 WEATHER = "get_information[get_current_weather_in_berlin]"
 RATE = "get_information[get_current_uah_per_eur]"
@@ -17,14 +17,17 @@ DEGREES = [["Grad", "°", "degree"]]
 HRYVNIA = [["hryw", "hriw", "griw", "gryw", "hryv", "griv", "UAH"], ["Euro", "EUR"]]
 # The turn that starts a form is code's: that it is started, and the question of its first step
 STARTED = {lang: [form_says("started", lang), ask("patient_name", lang)] for lang in ("de", "en")}
-# The reply to an unsupported request lists what the assistant does offer
+# What the assistant does offer, as the replies to an unsupported request and to a greeting list it
 OFFER_DE = [["Wetter"], ["kurs", "währung", "hryw", "griw", "UAH", "Euro"], ["Termin", "Arzt"]]
 OFFER_EN = [["weather"], ["rate", "currency", "hryv", "UAH", "euro"], ["appointment", "doctor"]]
+# Both replies are code's, like a repeated one: its sentence, then what is offered
+UNSUPPORTED_DE = [phrase("cannot_help_in_main_menu", "de")] + OFFER_DE
+UNSUPPORTED_EN = [phrase("cannot_help_in_main_menu", "en")] + OFFER_EN
 HUMAN_DE = [["verbind", "weiterleit", "leite", "Mitarbeiter", "Kolleg", "Agent", "Mensch", "Person", "durchstell"]]
 HUMAN_EN = [["transfer", "connect", "agent", "human", "representative", "operator", "person", "someone"]]
 # A greeting is answered with one and with what is offered, not with an apology
-HELLO_DE = [["Hallo", "Guten", "Grüß"]] + OFFER_DE
-HELLO_EN = [["Hello", "Hi", "Good"]] + OFFER_EN
+HELLO_DE = [phrase("hello", "de")] + OFFER_DE
+HELLO_EN = [phrase("hello", "en")] + OFFER_EN
 SORRY_DE = [["leid", "Entschuldig", "leider", "nicht unterstützt"]]
 SORRY_EN = [["sorry", "apolog", "unfortunately", "not supported"]]
 
@@ -72,20 +75,20 @@ GOLDENS = [
 
     # Close to a supported request, but not the same: another city, another currency, another booking
     golden("unsupported-de-city", "Wie ist das Wetter in München?", lang="de", capability="unsupported request",
-           intent="unsupported", context=["not supported"], says=OFFER_DE),
+           intent="unsupported", says=UNSUPPORTED_DE),
     golden("unsupported-de-currency", "Wie steht der Dollar zum Euro?", lang="de", capability="unsupported request",
-           intent="unsupported", context=["not supported"], says=OFFER_DE),
+           intent="unsupported", says=UNSUPPORTED_DE),
     golden("unsupported-de-booking", "Ich möchte einen Tisch im Restaurant reservieren.", lang="de",
-           capability="unsupported request", intent="unsupported", context=["not supported"], says=OFFER_DE),
+           capability="unsupported request", intent="unsupported", says=UNSUPPORTED_DE),
     golden("unsupported-de-joke", "Erzählen Sie mir bitte einen Witz.", lang="de", capability="unsupported request",
-           intent="unsupported", context=["not supported"], says=OFFER_DE),
+           intent="unsupported", says=UNSUPPORTED_DE),
 
     golden("greeting-de-1", "Hallo", lang="de", capability="greeting",
-           intent="greeting", context=["said hello"], says=HELLO_DE, never_says=SORRY_DE),
+           intent="greeting", says=HELLO_DE, never_says=SORRY_DE),
     golden("greeting-de-2", "Guten Tag", lang="de", capability="greeting",
-           intent="greeting", context=["said hello"], says=HELLO_DE, never_says=SORRY_DE),
+           intent="greeting", says=HELLO_DE, never_says=SORRY_DE),
     golden("greeting-de-3", "Hallo, wie geht es Ihnen?", lang="de", capability="greeting",
-           intent="greeting", context=["said hello"], says=HELLO_DE, never_says=SORRY_DE),
+           intent="greeting", says=HELLO_DE, never_says=SORRY_DE),
     # A greeting that comes with a request is the request
     golden("greeting-de-with-form", "Hallo, ich möchte einen Arzttermin vereinbaren.", lang="de",
            capability="greeting", intent=DOCTOR, says=STARTED["de"], form={"patient_name": ["queued", None]}),
@@ -93,10 +96,10 @@ GOLDENS = [
            intent=WEATHER, context=["Current weather in Berlin"], says=DEGREES),
 
     golden("repeat-de", "Wie bitte? Können Sie das wiederholen?", after=["Wie ist das Wetter in Berlin?"],
-           lang="de", capability="repeat", intent="repeat", context=["asked to hear your last reply"], says=DEGREES),
+           lang="de", capability="repeat", intent="repeat", says=DEGREES),
     # With nothing said yet there is nothing to repeat, and the caller hears what is offered
     golden("repeat-de-nothing-said", "Können Sie das bitte wiederholen?", lang="de", capability="repeat",
-           intent=["repeat", "unsupported"], context=["not supported"], says=OFFER_DE),
+           intent=["repeat", "unsupported"], says=UNSUPPORTED_DE),
 
     # Asked about a booking before any form was filled out, the caller hears that there is none
     golden("last-form-de-none", "Was habe ich gebucht?", lang="de", capability="last filled out form",
@@ -128,21 +131,21 @@ GOLDENS = [
            intent="transfer_to_human", action="transfer_to_human", asks="nothing", says=HUMAN_EN),
 
     golden("unsupported-en-city", "What's the weather like in Paris?", lang="en", capability="unsupported request",
-           intent="unsupported", context=["not supported"], says=OFFER_EN),
+           intent="unsupported", says=UNSUPPORTED_EN),
     golden("unsupported-en-currency", "What is the dollar to euro rate?", lang="en", capability="unsupported request",
-           intent="unsupported", context=["not supported"], says=OFFER_EN),
+           intent="unsupported", says=UNSUPPORTED_EN),
     golden("unsupported-en-booking", "I want to book a table at a restaurant.", lang="en",
-           capability="unsupported request", intent="unsupported", context=["not supported"], says=OFFER_EN),
+           capability="unsupported request", intent="unsupported", says=UNSUPPORTED_EN),
 
     golden("greeting-en-1", "Hi, how are you?", lang="en", capability="greeting",
-           intent="greeting", context=["said hello"], says=HELLO_EN, never_says=SORRY_EN),
+           intent="greeting", says=HELLO_EN, never_says=SORRY_EN),
     golden("greeting-en-2", "Hello, good morning to you.", lang="en", capability="greeting",
-           intent="greeting", context=["said hello"], says=HELLO_EN, never_says=SORRY_EN),
+           intent="greeting", says=HELLO_EN, never_says=SORRY_EN),
     golden("greeting-en-with-weather", "Hi, what's the weather like in Berlin?", lang="en", capability="greeting",
            intent=WEATHER, context=["Current weather in Berlin"], says=DEGREES),
 
     golden("repeat-en", "Sorry, could you repeat that?", after=["What's the weather like in Berlin?"],
-           lang="en", capability="repeat", intent="repeat", context=["asked to hear your last reply"], says=DEGREES),
+           lang="en", capability="repeat", intent="repeat", says=DEGREES),
 
     golden("last-form-en-none", "What did I book?", lang="en", capability="last filled out form",
            intent=LAST_FORM, context=["none was filled out yet"]),
