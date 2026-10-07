@@ -229,6 +229,9 @@ uk = "Час прийому: {value}. Усе правильно?"
 [intents.unsupported]
 description = "None of the other values fits. Also a greeting, small talk, or a request that is similar to a supported one but not the same, such as another city, another currency or another kind of booking"
 
+[intents.greeting]
+description = "The caller only says hello, such as \"hello\", \"good morning\" or \"hello, how are you\", and asks for nothing"
+
 [intents."get_information[calendar_help]"]
 description = "A question about the calendar, such as which date next Saturday is"
 
@@ -289,6 +292,7 @@ rules = [
     "If value cannot be derived from <utterance>, set the key to null.",
     "Write `date_of_birth_iso_8601` as YYYY-MM-DD.",
     "Write `appointment_spoken_date` and `appointment_spoken_time` in the caller's own words, without working a date or time out.",
+    "Set `appointment_reason` only when <utterance> names a symptom, a complaint or an examination. Wanting an appointment or a doctor is not a reason: set it to null then.",
 ]
 
 [machines.main_menu_intent_matcher]
@@ -414,6 +418,7 @@ end_call = "The caller is ending the call. Say a short, friendly goodbye and ask
 transfer = "Tell the caller you are transferring them to a human agent now, and ask nothing."
 # {offers} are the `offer` texts of the main menu's intents
 unsupported = "The caller asked for something that is not supported. Politely say so and list, in plain words, what you can help with instead: {offers}."
+greeting = "The caller said hello. Say hello back and list, in plain words, what you can help with: {offers}."
 calendar_help = "The caller asked about dates or the calendar, which you cannot help with. Say you are sorry that you cannot help with dates"
 last_filled_out_form = "The caller asked about the form they filled out last in this call. Summarize it in one or two sentences: the {form} form with {values}."
 no_filled_out_form = "The caller asked about a form they filled out in this call, but none was filled out yet. Say so and summarize nothing."

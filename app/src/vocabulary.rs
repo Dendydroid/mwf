@@ -241,6 +241,8 @@ pub struct Instructions {
     pub transfer: String,
     // With {offers}
     pub unsupported: String,
+    // With {offers}
+    pub greeting: String,
     pub calendar_help: String,
     // With {form} and {values}
     pub last_filled_out_form: String,

@@ -103,6 +103,7 @@ pub mod main_menu_flow {
         pub date_of_birth_iso_8601: Option<String>,
         pub appointment_spoken_date: Option<String>,
         pub appointment_spoken_time: Option<String>,
+        pub appointment_reason: Option<String>,
         // The form the caller filled out last in this call. Set by the turn that completes a form,
         // never by the context extractor, so it is kept out of the extractor's schema.
         #[schemars(skip)]
@@ -117,6 +118,7 @@ pub mod main_menu_flow {
             self.date_of_birth_iso_8601 = other.date_of_birth_iso_8601.or(self.date_of_birth_iso_8601.take());
             self.appointment_spoken_date = other.appointment_spoken_date.or(self.appointment_spoken_date.take());
             self.appointment_spoken_time = other.appointment_spoken_time.or(self.appointment_spoken_time.take());
+            self.appointment_reason = other.appointment_reason.or(self.appointment_reason.take());
         }
 
         /// Puts what the caller already said into a form that was just started. Those values wait for the
@@ -151,6 +153,7 @@ pub mod main_menu_flow {
                 FormSupported::DoctorAppointment => [
                     ("patient_name", self.patient_full_name.as_deref()),
                     ("date_of_birth", self.date_of_birth_iso_8601.as_deref()),
+                    ("reason", self.appointment_reason.as_deref()),
                     ("appointment_date", self.appointment_spoken_date.as_deref()),
                     ("appointment_time", self.appointment_spoken_time.as_deref()),
                 ],
@@ -189,6 +192,7 @@ pub mod main_menu_flow {
                     ("date_of_birth_iso_8601", &self.date_of_birth_iso_8601 as &dyn ValueSchema),
                     ("appointment_spoken_date", &self.appointment_spoken_date as &dyn ValueSchema),
                     ("appointment_spoken_time", &self.appointment_spoken_time as &dyn ValueSchema),
+                    ("appointment_reason", &self.appointment_reason as &dyn ValueSchema),
                 ]
                     .into_iter(),
             )
@@ -204,6 +208,7 @@ pub mod main_menu_flow {
 
             vec![
                 Unsupported,
+                Greeting,
                 GetInformation {selected: GetInformationSupported::CalendarHelp},
                 GetInformation {selected: GetInformationSupported::GetCurrentUAHPerEUR},
                 GetInformation {selected: GetInformationSupported::GetCurrentWeatherInBerlin},
@@ -322,18 +327,9 @@ pub mod main_menu_flow {
 
                 // TODO: Transfer to human logic
             }
+            CallerIntent::Greeting => fill_in(&instructions.greeting, &[("offers", &offers())]),
             // CallerIntent::Unsupported | CallerIntent::Repeat if has_conversation_just_started
-            _ => {
-                // What the menu has an `offer` for in the vocabulary, each as it is named there
-                let offers = IntendedMainMenuAction::default()
-                    .allowed_values()
-                    .iter()
-                    .filter_map(|value| vocabulary().intent(&value.to_string()).offer.as_deref())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                fill_in(&instructions.unsupported, &[("offers", &offers)])
-            },
+            _ => fill_in(&instructions.unsupported, &[("offers", &offers())]),
         };
 
         session.call_turn_context.insert(
@@ -342,6 +338,16 @@ pub mod main_menu_flow {
         );
 
         Reply::Formulated { then: None }
+    }
+
+    /// What the menu has an `offer` for in the vocabulary, each as it is named there.
+    fn offers() -> String {
+        IntendedMainMenuAction::default()
+            .allowed_values()
+            .iter()
+            .filter_map(|value| vocabulary().intent(&value.to_string()).offer.as_deref())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Starts the form with what the caller already said in it. Returns what the caller hears: that

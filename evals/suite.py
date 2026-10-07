@@ -64,6 +64,7 @@ NO_HINTS = {
     "date_of_birth_iso_8601": None,
     "appointment_spoken_date": None,
     "appointment_spoken_time": None,
+    "appointment_reason": None,
 }
 
 

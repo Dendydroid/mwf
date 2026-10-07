@@ -21,6 +21,7 @@ pub(crate) use flat_enum;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerIntent {
     Unsupported,
+    Greeting,
     GetInformation {selected: GetInformationSupported},
     StartForm {form: FormSupported},
     ProvideFormFieldValue,
@@ -75,6 +76,7 @@ impl CallerIntent {
         // pointing you here to also add it to the list below.
         match Unsupported {
             Unsupported
+            | Greeting
             | GetInformation { .. }
             | StartForm { .. }
             | ProvideFormFieldValue
@@ -90,6 +92,7 @@ impl CallerIntent {
 
         let mut all = vec![
             Unsupported,
+            Greeting,
             ProvideFormFieldValue,
             CancelForm,
             ReferToContextForFormFieldValue,
@@ -125,6 +128,7 @@ impl Display for CallerIntent {
         // carry a payload spell it into the label and the bare ones do not.
         match self {
             CallerIntent::Unsupported => f.write_str("unsupported"),
+            CallerIntent::Greeting => f.write_str("greeting"),
             CallerIntent::GetInformation {selected} => write!(f, "get_information[{selected}]"),
             CallerIntent::StartForm {form} => write!(f, "start_form[{form}]"),
             CallerIntent::ProvideFormFieldValue => f.write_str("provide_form_field_value"),

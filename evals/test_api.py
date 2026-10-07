@@ -16,7 +16,7 @@ RESPONSE_KEYS = {
 }
 HINT_KEYS = {
     "caller_full_name", "patient_full_name", "date_of_birth_iso_8601", "appointment_spoken_date",
-    "appointment_spoken_time", "last_filled_out_form",
+    "appointment_spoken_time", "appointment_reason", "last_filled_out_form",
 }
 SESSION_TTL_SECONDS = 3600
 
